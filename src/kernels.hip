@@ -7,7 +7,7 @@
 //     dir = fwd + tan_half_fov * (u*right + v*up + s*ana)
 // `march` fills the retina, `retina_alpha` turns it into an RGBA volume with
 // silhouette emphasis, and `composite` volume-renders that cube onto the 2D
-// screen for a 3D observer. `march_slice` renders just the s = 0 layer at
+// screen for a 3D observer standing in a room around it. `march_slice` renders just the s = 0 layer at
 // screen resolution (the 3D cross-section view).
 //
 // The terrain functions (hash4 .. terrain_height) are mirrored exactly in
@@ -44,7 +44,9 @@ struct Params {
     int sun_index;
     int num_bodies;
     int width, height;
-    float obs_yaw, obs_pitch, obs_dist;
+    float obs_pos[3], obs_fwd[3], obs_right[3], obs_up[3];  // observer camera (room space)
+    float obs_fov;    // tan of the observer's half field of view
+    int room;         // draw the observatory room (else a dark void)
     float base_alpha, edge_gain;
     float marker[4];  // retina-space (u, v, s) of the target marker, w > 0 = visible
     Body bodies[MAX_BODIES];
@@ -424,84 +426,223 @@ __device__ inline float4 sample_vol(const uchar4* vol, int n, float x, float y, 
     return make_float4(acc.x * inv, acc.y * inv, acc.z * inv, acc.w);
 }
 
-// A 3D observer looks at the retina cube [-1,1]^3 (u right, v up, s toward
-// the observer's "depth") from an orbit camera, compositing front to back.
+// ---------------------------------------------------------------------------
+// The observatory: the retina cube [-1,1]^3 floats over a pedestal in the
+// middle of a room, and a 3D observer (you) looks at it. Everything here is
+// ordinary 3D. Room coordinates: y up, cube centered at the origin, 1 unit = 1 m.
+// ---------------------------------------------------------------------------
+
+struct f3 { float x, y, z; };
+__device__ inline f3 m3(float x, float y, float z) { f3 r = {x, y, z}; return r; }
+__device__ inline f3 ld3(const float* a) { return m3(a[0], a[1], a[2]); }
+__device__ inline f3 operator+(f3 a, f3 b) { return m3(a.x + b.x, a.y + b.y, a.z + b.z); }
+__device__ inline f3 operator-(f3 a, f3 b) { return m3(a.x - b.x, a.y - b.y, a.z - b.z); }
+__device__ inline f3 operator*(f3 a, float s) { return m3(a.x * s, a.y * s, a.z * s); }
+__device__ inline float dot3(f3 a, f3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
+__device__ inline float ax(f3 v, int a) { return a == 0 ? v.x : (a == 1 ? v.y : v.z); }
+
+#define ROOM_X 9.0f
+#define ROOM_FLOOR -2.3f
+#define ROOM_CEIL 3.5f
+#define PED_HALF 0.55f
+#define PED_TOP -1.45f
+
+// Ray/AABB slab test. Returns entry/exit distances and the entry face axis.
+__device__ inline bool box_hit(f3 ro, f3 rd, f3 lo, f3 hi, float& t0, float& t1, int& face) {
+    t0 = -1e30f; t1 = 1e30f; face = 0;
+    for (int a = 0; a < 3; a++) {
+        float inv = 1.0f / ax(rd, a);
+        float ta = (ax(lo, a) - ax(ro, a)) * inv, tb = (ax(hi, a) - ax(ro, a)) * inv;
+        float tn = fminf(ta, tb), tf = fmaxf(ta, tb);
+        if (tn > t0) { t0 = tn; face = a; }
+        t1 = fminf(t1, tf);
+    }
+    return t1 > fmaxf(t0, 0.0f);
+}
+
+// Front-to-back compositing of the retina volume along a ray, up to tmax.
+__device__ inline void composite_cube(const Params& P, const uchar4* vol, f3 ro, f3 rd, float tmax, float acc[3], float& A) {
+    int n = P.n;
+    float t0, t1; int face;
+    f3 lo = m3(-1, -1, -P.slab - 1.0f / n), hi = m3(1, 1, P.slab + 1.0f / n);
+    if (!box_hit(ro, rd, lo, hi, t0, t1, face)) return;
+    t0 = fmaxf(t0, 0.0f);
+    t1 = fminf(t1, tmax);
+    float step = 1.0f / n;  // half a voxel (cube is 2 units wide)
+    float vox = 2.0f / n;
+    for (float t = t0 + step * 0.5f; t < t1; t += step) {
+        f3 p = ro + rd * t;
+        float4 s = sample_vol(vol, n, (p.x + 1.0f) * 0.5f * n, (1.0f - p.y) * 0.5f * n, (p.z + 1.0f) * 0.5f * n);
+        float a = 1.0f - powf(1.0f - fminf(s.w, 0.999f), step / vox);
+        float w = (1.0f - A) * a;
+        acc[0] += w * s.x; acc[1] += w * s.y; acc[2] += w * s.z;
+        A += w;
+        if (A > 0.985f) break;
+    }
+}
+
+// Faint cube frame: brighten where the ray's entry/exit point is on an edge.
+__device__ inline float cube_frame(f3 ro, f3 rd, float tmax, float lw) {
+    float t0, t1; int face;
+    if (!box_hit(ro, rd, m3(-1, -1, -1), m3(1, 1, 1), t0, t1, face)) return 0.0f;
+    float k = 0.0f;
+    for (int e = 0; e < 2; e++) {
+        float t = e == 0 ? t0 : t1;
+        if (t < 0.0f || t > tmax) continue;
+        f3 p = ro + rd * t;
+        int near = (fabsf(fabsf(p.x) - 1.0f) < lw) + (fabsf(fabsf(p.y) - 1.0f) < lw) + (fabsf(fabsf(p.z) - 1.0f) < lw);
+        if (near >= 2) k = fmaxf(k, e == 0 ? 0.45f : 0.2f);
+    }
+    return k;
+}
+
+struct RoomHit { float t; f3 p; f3 n; int kind; };  // kind: 0 floor, 1 ceiling, 2 wall, 3 pedestal
+
+__device__ inline RoomHit trace_room(f3 ro, f3 rd) {
+    RoomHit h;
+    // Interior of the room box: nearest exit plane.
+    float best = 1e30f; int axis = 0;
+    f3 lo = m3(-ROOM_X, ROOM_FLOOR, -ROOM_X), hi = m3(ROOM_X, ROOM_CEIL, ROOM_X);
+    for (int a = 0; a < 3; a++) {
+        float d = ax(rd, a);
+        float t = ((d > 0.0f ? ax(hi, a) : ax(lo, a)) - ax(ro, a)) / d;
+        if (t < best) { best = t; axis = a; }
+    }
+    h.t = best;
+    h.n = m3(axis == 0 ? -copysignf(1.0f, rd.x) : 0.0f, axis == 1 ? -copysignf(1.0f, rd.y) : 0.0f, axis == 2 ? -copysignf(1.0f, rd.z) : 0.0f);
+    h.kind = axis == 1 ? (rd.y < 0.0f ? 0 : 1) : 2;
+    float t0, t1; int face;
+    if (box_hit(ro, rd, m3(-PED_HALF, ROOM_FLOOR, -PED_HALF), m3(PED_HALF, PED_TOP, PED_HALF), t0, t1, face) && t0 > 0.0f && t0 < h.t) {
+        h.t = t0;
+        h.kind = 3;
+        h.n = m3(face == 0 ? -copysignf(1.0f, rd.x) : 0.0f, face == 1 ? -copysignf(1.0f, rd.y) : 0.0f, face == 2 ? -copysignf(1.0f, rd.z) : 0.0f);
+    }
+    h.p = ro + rd * h.t;
+    return h;
+}
+
+__device__ inline float hash2(int x, int y) { return (hash4(x, y, 7, 3, 99u) & 0xffff) / 65535.0f; }
+
+// Illumination from the three ceiling light strips (running along z at
+// x = -4, 0, 4) plus the cube's own glow.
+__device__ inline c3 room_light(f3 p, f3 n) {
+    c3 L = rgb(0.22f, 0.23f, 0.27f);
+    for (int s = -1; s <= 1; s++) {
+        f3 lp = m3(s * 4.0f, ROOM_CEIL - 0.05f, fminf(fmaxf(p.z, -ROOM_X + 1.0f), ROOM_X - 1.0f));
+        f3 d = lp - p;
+        float r2 = dot3(d, d);
+        float cosn = fmaxf(dot3(n, d * rsqrtf(r2)), 0.0f);
+        float cosl = fmaxf(-d.y * rsqrtf(r2), 0.0f);
+        L = L + rgb(1.0f, 0.95f, 0.88f) * (55.0f * cosn * cosl / (r2 + 4.0f));
+    }
+    f3 d = m3(0, 0, 0) - p;
+    float r2 = dot3(d, d);
+    L = L + rgb(0.35f, 0.55f, 0.9f) * (4.0f * fmaxf(dot3(n, d * rsqrtf(r2)), 0.0f) / (r2 + 1.0f));
+    return L;
+}
+
+__device__ inline c3 room_surface(const RoomHit& h, float& gloss) {
+    f3 p = h.p;
+    gloss = 0.0f;
+    // Soft occlusion where surfaces meet.
+    float edge = fminf(ROOM_X - fabsf(p.x), ROOM_X - fabsf(p.z));
+    float ao = 0.55f + 0.45f * smooth(0.0f, 1.5f, edge);
+    if (h.kind == 0) {
+        // Dark glossy tiles with grout lines; occluded around the pedestal.
+        float fx = p.x - floorf(p.x), fz = p.z - floorf(p.z);
+        float grout = fminf(fminf(fx, 1.0f - fx), fminf(fz, 1.0f - fz));
+        float g = smooth(0.008f, 0.02f, grout);
+        float v = 0.85f + 0.3f * hash2((int)floorf(p.x), (int)floorf(p.z));
+        float pd = fmaxf(fabsf(p.x), fabsf(p.z)) - PED_HALF;
+        ao *= 0.5f + 0.5f * smooth(0.0f, 0.8f, pd);
+        gloss = 0.85f * g;
+        c3 base = mixc(rgb(0.02f, 0.02f, 0.025f), rgb(0.11f, 0.115f, 0.13f) * v, g);
+        return base * room_light(p, h.n) * ao;
+    }
+    if (h.kind == 1) {
+        // Ceiling with emissive light strips.
+        float strip = 0.0f;
+        for (int s = -1; s <= 1; s++) strip = fmaxf(strip, 1.0f - smooth(0.12f, 0.18f, fabsf(p.x - s * 4.0f)));
+        strip *= 1.0f - smooth(ROOM_X - 1.2f, ROOM_X - 1.0f, fabsf(p.z));
+        return rgb(0.03f, 0.03f, 0.035f) * ao + rgb(1.0f, 0.95f, 0.88f) * (2.5f * strip);
+    }
+    if (h.kind == 2) {
+        // Panelled walls: dark wainscot, lighter upper panels, glowing baseboard.
+        float u = fabsf(h.n.x) > 0.5f ? p.z : p.x;
+        float hgt = p.y - ROOM_FLOOR;
+        float fu = u / 1.5f - floorf(u / 1.5f);
+        float seam = smooth(0.0f, 0.015f, fminf(fu, 1.0f - fu));
+        float rail = smooth(0.01f, 0.03f, fabsf(hgt - 1.0f));
+        c3 base = hgt < 1.0f ? rgb(0.12f, 0.12f, 0.135f) : rgb(0.3f, 0.31f, 0.34f);
+        base = base * (0.5f + 0.5f * seam * rail);
+        c3 c = base * room_light(p, h.n) * ao;
+        if (hgt < 0.06f) c = c + rgb(0.15f, 0.6f, 0.85f) * 1.2f;
+        return c;
+    }
+    // Pedestal: dark metal, glowing rim at the top.
+    c3 c = rgb(0.12f, 0.125f, 0.14f) * room_light(p, h.n);
+    if (PED_TOP - p.y < 0.05f && h.n.y < 0.5f) c = c + rgb(0.15f, 0.6f, 0.85f) * 2.0f;
+    if (h.n.y > 0.5f) c = c + rgb(0.1f, 0.15f, 0.25f) * 0.5f;
+    return c;
+}
+
+// Color seen along a ray: the cube volume composited over the room (or over
+// a dark void if the room is off). Floor reflections recurse once.
+template <bool allow_reflection>
+__device__ inline c3 observe(const Params& P, const uchar4* vol, f3 ro, f3 rd, float aspect_y) {
+    c3 bg;
+    float tsurf = 1e30f;
+    if (P.room) {
+        RoomHit h = trace_room(ro, rd);
+        tsurf = h.t;
+        float gloss;
+        bg = room_surface(h, gloss);
+        if (allow_reflection && gloss > 0.0f) {
+            float cosi = fabsf(rd.y);
+            float fres = 0.05f + 0.95f * powf(1.0f - cosi, 5.0f);
+            f3 rr = m3(rd.x, -rd.y, rd.z);
+            c3 refl = observe<false>(P, vol, h.p + m3(0, 0.001f, 0), rr, aspect_y);
+            bg = bg + refl * (gloss * (0.25f + 0.75f * fres));
+        }
+    } else {
+        float k = 0.02f + 0.03f * (0.5f + 0.5f * rd.y);
+        bg = rgb(k * 0.6f, k * 0.7f, k);
+    }
+    float acc[3] = {0, 0, 0}, A = 0.0f;
+    composite_cube(P, vol, ro, rd, tsurf, acc, A);
+    c3 col = rgb(acc[0], acc[1], acc[2]) + bg * (1.0f - A);
+    float fr = cube_frame(ro, rd, tsurf, 0.012f);
+    return col * (1.0f - fr) + rgb(0.75f, 0.8f, 0.85f) * fr;
+}
+
 extern "C" __global__ void composite(const Params* __restrict__ Pp, const uchar4* __restrict__ vol, uchar4* __restrict__ pixels) {
     const Params& P = *Pp;
     int px = blockIdx.x * blockDim.x + threadIdx.x;
     int py = blockIdx.y * blockDim.y + threadIdx.y;
     if (px >= P.width || py >= P.height) return;
-    int n = P.n;
 
     float aspect = (float)P.width / P.height;
     float sx = ((px + 0.5f) / P.width * 2.0f - 1.0f) * aspect;
     float sy = 1.0f - (py + 0.5f) / P.height * 2.0f;
+    f3 fwd = ld3(P.obs_fwd), rgt = ld3(P.obs_right), upv = ld3(P.obs_up);
+    f3 ro = ld3(P.obs_pos);
+    f3 rd = fwd + (rgt * sx + upv * sy) * P.obs_fov;
+    rd = rd * rsqrtf(dot3(rd, rd));
 
-    float cy = cosf(P.obs_yaw), syw = sinf(P.obs_yaw), cp = cosf(P.obs_pitch), sp = sinf(P.obs_pitch);
-    // Observer basis. At yaw = pitch = 0 the observer looks along +s, so the
-    // s = 0 layer (the ordinary 3D-slice view) faces the screen.
-    float fwd[3] = {syw * cp, sp, cy * cp};
-    float rgt[3] = {cy, 0.0f, -syw};
-    float upv[3] = {-syw * sp, cp, -cy * sp};
-    float ro[3], rd[3];
-    const float fov = 0.55f;
-    for (int a = 0; a < 3; a++) {
-        ro[a] = -fwd[a] * P.obs_dist;
-        rd[a] = fwd[a] + (rgt[a] * sx + upv[a] * sy) * fov;
-    }
-    float rl = sqrtf(rd[0] * rd[0] + rd[1] * rd[1] + rd[2] * rd[2]);
-    for (int a = 0; a < 3; a++) rd[a] /= rl;
+    c3 c = observe<true>(P, vol, ro, rd, aspect);
+    // Room surfaces are linear radiance; cube voxels are already display
+    // values, so only the room gets a gentle tone curve.
+    float col[3] = {c.r, c.g, c.b};
+    for (int a = 0; a < 3; a++) col[a] = col[a] / (1.0f + col[a] * 0.35f);
 
-    // Background: subtle vertical gradient.
-    float bgk = 0.02f + 0.03f * (1.0f - (py + 0.5f) / P.height);
-    float col[3] = {bgk * 0.6f, bgk * 0.7f, bgk};
-    float acc[3] = {0, 0, 0}, A = 0.0f;
-
-    // Slab box intersection.
-    float lo[3] = {-1, -1, -P.slab - 1.0f / n}, hi[3] = {1, 1, P.slab + 1.0f / n};
-    float t0 = 0.0f, t1 = 1e9f;
-    for (int a = 0; a < 3; a++) {
-        float inv = 1.0f / rd[a];
-        float ta = (lo[a] - ro[a]) * inv, tb = (hi[a] - ro[a]) * inv;
-        t0 = fmaxf(t0, fminf(ta, tb));
-        t1 = fminf(t1, fmaxf(ta, tb));
-    }
-    if (t1 > t0) {
-        // Frame lines on the cube's edges (front brighter than back).
-        float pe[3], px2[3];
-        for (int a = 0; a < 3; a++) { pe[a] = ro[a] + rd[a] * t0; px2[a] = ro[a] + rd[a] * t1; }
-        float lw = 0.006f * P.obs_dist;
-        int ne = 0, nx = 0;
-        for (int a = 0; a < 3; a++) {
-            if (fabsf(fabsf(pe[a]) - hi[a]) < lw) ne++;
-            if (fabsf(fabsf(px2[a]) - hi[a]) < lw) nx++;
-        }
-
-        float step = 1.0f / n;  // half a voxel (cube is 2 units wide)
-        float vox = 2.0f / n;
-        for (float t = t0 + step * 0.5f; t < t1; t += step) {
-            float x = ro[0] + rd[0] * t, y = ro[1] + rd[1] * t, z = ro[2] + rd[2] * t;
-            float4 s = sample_vol(vol, n, (x + 1.0f) * 0.5f * n, (1.0f - y) * 0.5f * n, (z + 1.0f) * 0.5f * n);
-            float a = 1.0f - powf(1.0f - fminf(s.w, 0.999f), step / vox);
-            float w = (1.0f - A) * a;
-            acc[0] += w * s.x; acc[1] += w * s.y; acc[2] += w * s.z;
-            A += w;
-            if (A > 0.985f) break;
-        }
-        for (int a = 0; a < 3; a++) col[a] = acc[a] + (1.0f - A) * col[a];
-        if (ne >= 2) for (int a = 0; a < 3; a++) col[a] = col[a] * 0.6f + 0.4f * 0.75f;
-        else if (nx >= 2) for (int a = 0; a < 3; a++) col[a] = col[a] * 0.8f + 0.2f * 0.5f;
-    }
-
-    // Target marker: a small ring where the target body's center projects
-    // into the retina volume.
+    // Target marker: a ring where the target body's center projects into the
+    // retina volume.
     if (P.marker[3] > 0.0f) {
-        float m[3] = {P.marker[0], P.marker[1], P.marker[2]};
-        float rel[3] = {m[0] - ro[0], m[1] - ro[1], m[2] - ro[2]};
-        float tz = rel[0] * fwd[0] + rel[1] * fwd[1] + rel[2] * fwd[2];
+        f3 rel = m3(P.marker[0], P.marker[1], P.marker[2]) - ro;
+        float tz = dot3(rel, fwd);
         if (tz > 0.0f) {
-            float mx = (rel[0] * rgt[0] + rel[1] * rgt[1] + rel[2] * rgt[2]) / (tz * fov);
-            float my = (rel[0] * upv[0] + rel[1] * upv[1] + rel[2] * upv[2]) / (tz * fov);
+            float mx = dot3(rel, rgt) / (tz * P.obs_fov);
+            float my = dot3(rel, upv) / (tz * P.obs_fov);
             float dx = (sx - mx) * P.height * 0.5f, dy = (sy - my) * P.height * 0.5f;
             float d = sqrtf(dx * dx + dy * dy);
             if (fabsf(d - 9.0f) < 1.2f) { col[0] = 1.0f; col[1] = 0.85f; col[2] = 0.2f; }

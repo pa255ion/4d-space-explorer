@@ -40,9 +40,12 @@ pub const Params = extern struct {
     num_bodies: i32,
     width: i32,
     height: i32,
-    obs_yaw: f32,
-    obs_pitch: f32,
-    obs_dist: f32,
+    obs_pos: [3]f32,
+    obs_fwd: [3]f32,
+    obs_right: [3]f32,
+    obs_up: [3]f32,
+    obs_fov: f32,
+    room: i32,
     base_alpha: f32,
     edge_gain: f32,
     marker: [4]f32,
@@ -51,17 +54,28 @@ pub const Params = extern struct {
 
 comptime {
     std.debug.assert(@sizeOf(Body) == 26 * 4);
-    std.debug.assert(@sizeOf(Params) == (16 + 4 + 3 + 2 + 2 + 5 + 4) * 4 + max_bodies * @sizeOf(Body));
+    std.debug.assert(@sizeOf(Params) == (16 + 4 + 3 + 2 + 2 + 14 + 2 + 4) * 4 + max_bodies * @sizeOf(Body));
 }
 
 // ---------------------------------------------------------------------------
 // The solar system. Positions are in metres (f64 on the CPU; the GPU only
-// ever sees them relative to the ship, as f32).
+// ever sees them relative to the ship, as f32). `pos` is each body's position
+// at t = 0; system.zig moves them (or not) according to the chosen motion mode.
+//
+// Layout constraints (checked by tests in system.zig), all consequences of
+// 1/r^3 gravity's short reach:
+//   - the sun's pull on each planet dominates the planets' pulls on each
+//     other (< 1%), so orbits are close to sun-only Kepler circles;
+//   - the sun's tidal acceleration across each planet is a few % of its
+//     surface gravity at most.
 // ---------------------------------------------------------------------------
 
 pub const Planet = struct {
     name: []const u8,
     pos: V4,
+    /// Direction of orbital motion at t = 0 (orthonormalized against `pos`).
+    /// The orbit lies in the plane of `pos` and this vector.
+    tangent: V4 = .{ 0, 0, 0, 0 },
     /// Surface gravity at `radius`, m/s^2. With 4D gravity a = GM / r^3, so
     /// GM = g * R^3.
     surface_g: f64,
@@ -79,12 +93,14 @@ pub const planets = [_]Planet{
     .{
         .name = "SOL",
         .pos = .{ 0, 0, 0, 0 },
-        .surface_g = 40,
+        // GM = 2.16e14: 1 m/s^2 of solar gravity at TERRA's orbit.
+        .surface_g = 8000,
         .gpu = .{ .radius = 3000, .emissive = 4.0 },
     },
     .{
         .name = "TERRA",
-        .pos = .{ 25000, 0, 0, 0 },
+        .pos = .{ 60000, 0, 0, 0 },
+        .tangent = .{ 0, 0, 1, 0 },
         .surface_g = 9.81,
         .gpu = .{
             .radius = 2000,
@@ -102,7 +118,8 @@ pub const planets = [_]Planet{
     },
     .{
         .name = "OCHRE",
-        .pos = .{ 24000, 1500, 5500, 4500 },
+        .pos = m4.scale(m4.normalize(.{ 0.6, 0.3, -0.3, 0.68 }), 52000),
+        .tangent = .{ 0, 1, 0, 0 },
         .surface_g = 6.0,
         .gpu = .{
             .radius = 1400,
@@ -118,7 +135,8 @@ pub const planets = [_]Planet{
     },
     .{
         .name = "GLACIES",
-        .pos = .{ 21000, -2500, -1500, -5500 },
+        .pos = m4.scale(m4.normalize(.{ 0.75, -0.3, 0.25, -0.5 }), 45000),
+        .tangent = .{ 0, 0, 0, 1 },
         .surface_g = 2.5,
         .gpu = .{
             .radius = 700,
@@ -222,11 +240,11 @@ pub fn terrainHeight(b: *const Body, dir: F4, octaves: u32) f32 {
     return b.amp * (land + mountains);
 }
 
-/// Height of the solid-or-liquid surface above `pos` relative to planet `pl`:
-/// positive = clearance, negative = penetration. Measured radially, which for
-/// gentle terrain is close to the true distance.
-pub fn surfaceGap(pl: *const Planet, pos: V4) f64 {
-    const rel = pos - pl.pos;
+/// Height of the solid-or-liquid surface above `pos` for planet `pl` centered
+/// at `center`: positive = clearance, negative = penetration. Measured
+/// radially, which for gentle terrain is close to the true distance.
+pub fn surfaceGap(pl: *const Planet, center: V4, pos: V4) f64 {
+    const rel = pos - center;
     const r = m4.len(rel);
     const b = &pl.gpu;
     if (b.amp <= 0) return r - b.radius;
@@ -239,17 +257,17 @@ pub fn surfaceGap(pl: *const Planet, pos: V4) f64 {
 }
 
 /// Outward surface normal at `pos` (gradient of surfaceGap).
-pub fn surfaceNormal(pl: *const Planet, pos: V4) V4 {
+pub fn surfaceNormal(pl: *const Planet, center: V4, pos: V4) V4 {
     const e = 0.25;
-    const g0 = surfaceGap(pl, pos);
+    const g0 = surfaceGap(pl, center, pos);
     var g: V4 = undefined;
     inline for (0..4) |k| {
         var q = pos;
         q[k] += e;
-        g[k] = surfaceGap(pl, q) - g0;
+        g[k] = surfaceGap(pl, center, q) - g0;
     }
     const l = m4.len(g);
-    if (l < 1e-9) return m4.normalize(pos - pl.pos);
+    if (l < 1e-9) return m4.normalize(pos - center);
     return g / @as(V4, @splat(l));
 }
 
