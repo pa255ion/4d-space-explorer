@@ -39,6 +39,11 @@ pub const Game = struct {
     res_pct: ?u8 = null,
     /// Retina resolution actually rendered, if not `s.n` (web auto quality).
     n_eff: ?i32 = null,
+    /// A message shown mid-screen for `notice_time` seconds.
+    notice: []const u8 = "",
+    notice_time: f64 = 0,
+    /// Shown permanently under the HUD bar (web: software renderer warning).
+    warning: []const u8 = "",
 
     pub fn init(s: Settings) Game {
         var g = Game{ .ship = undefined, .sys = system.System.init(s.motion), .s = s };
@@ -145,6 +150,7 @@ pub const Game = struct {
     /// mouse motion since the last frame, then run as many fixed physics
     /// steps as `frame_dt` (times the warp) covers.
     pub fn update(g: *Game, keys: []const u8, mouse_dx: f32, mouse_dy: f32, frame_dt: f64) void {
+        g.notice_time -= frame_dt;
         if (frame_dt > 0) g.fps = if (g.fps == 0) 1 / frame_dt else g.fps * 0.92 + 0.08 / frame_dt;
         const s = &g.s;
         const held = struct {
@@ -255,7 +261,7 @@ pub fn buildParams(g: *const Game, width: u32, height: u32) world.Params {
         .tan_half_fov = s.tanHalfFov(),
         .n = g.n_eff orelse s.n,
         .slab = s.slab,
-        .shadows = @intFromBool(s.shadows),
+        .shadows = @intFromBool(s.shadows and !s.low_quality),
         .sun_rgb = .{ 1.0, 0.94, 0.85 },
         .sun_index = world.sun_index,
         .num_bodies = world.planets.len,
@@ -270,6 +276,7 @@ pub fn buildParams(g: *const Game, width: u32, height: u32) world.Params {
         .base_alpha = s.base_alpha,
         .edge_gain = s.edge_gain,
         .marker = .{ 0, 0, 0, 0 },
+        .low = @intFromBool(s.low_quality),
         .bodies = undefined,
     };
     for (world.planets, 0..) |pl, i| {
@@ -374,7 +381,10 @@ pub fn drawHud(c: hud.Canvas, g: *Game) void {
         .rails => "RAILS",
         .nbody => "N-BODY",
     };
-    const view_name = if (s.view == .retina) "RETINA" else "SLICE";
+    const view_name = if (s.view == .retina)
+        (if (s.low_quality) "RETINA LOW" else "RETINA")
+    else
+        (if (s.low_quality) "SLICE LOW" else "SLICE");
     const axes_name = settings_mod.axis_presets[s.axes].name;
     var rbuf: [16]u8 = undefined;
     const res = if (g.res_pct) |pct| std.fmt.bufPrint(&rbuf, "  RES {d}%", .{pct}) catch "" else "";
@@ -395,6 +405,10 @@ pub fn drawHud(c: hud.Canvas, g: *Game) void {
         var kb: [16]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "ROOM MODE - WALK WITH MOVE KEYS, {s} TO RETURN TO THE HELM", .{settings_mod.keyName(@intCast(s.key(.room_mode)), &kb)}) catch "";
         c.text(@intCast((c.width -| hud.textWidth(msg, 2)) / 2), bottom, 2, cyan, msg);
+    }
+    if (g.warning.len > 0) c.text(8, 80, 2, warn, g.warning);
+    if (g.notice_time > 0 and !g.menu.open) {
+        c.text(@intCast((c.width -| hud.textWidth(g.notice, 2)) / 2), 110, 2, amber, g.notice);
     }
     if (!g.captured and !g.menu.open) {
         const msg = "CLICK TO CAPTURE THE MOUSE";

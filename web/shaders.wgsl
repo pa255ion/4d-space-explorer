@@ -13,6 +13,7 @@
 // ---------------------------------------------------------------------------
 
 const MAX_OCTAVES: f32 = 9.0;
+const LOW_OCTAVES: f32 = 5.0; // low quality caps terrain octaves (and coarsens LOD 2x)
 
 // Byte layout = struct Body / struct Params in kernels.hip and world.zig.
 // Only 4-byte-aligned members (arrays, no vec3/vec4), so there is no padding.
@@ -55,6 +56,7 @@ struct Params {
     base_alpha: f32,
     edge_gain: f32,
     marker: array<f32, 4>,
+    low: i32,
     bodies: array<Body, 8>,
 }
 
@@ -166,10 +168,12 @@ struct Hit {
 }
 
 fn lod_octaves(bi: i32, t: f32, footprint: f32) -> i32 {
-    // Stop adding octaves once their wavelength is below ~2 retina voxels.
-    let px = max(t * footprint, 0.05);
+    // Stop adding octaves once their wavelength is below ~2 retina voxels
+    // (~4 in low quality).
+    let low = P.low != 0;
+    let px = max(t * footprint, 0.05) * select(1.0, 2.0, low);
     let o = log2(P.bodies[bi].feature / (2.0 * px)) + 1.0;
-    return i32(clamp(o, 1.0, MAX_OCTAVES));
+    return i32(clamp(o, 1.0, select(MAX_OCTAVES, LOW_OCTAVES, low)));
 }
 
 // shadow = true is the variant for shadow rays: stars are skipped, the sea is
@@ -221,9 +225,13 @@ fn scene(p: vec4f, t: f32, footprint: f32, shadow: bool) -> Hit {
 
 fn march(ro: vec4f, rd: vec4f, tmax: f32, footprint: f32, out: ptr<function, Hit>) -> f32 {
     var t = 0.05;
-    for (var i = 0; i < 220; i++) {
+    let low = P.low != 0;
+    let steps = select(220, 120, low);
+    let eps_t = select(0.0008, 0.002, low);
+    let eps_0 = select(0.01, 0.02, low);
+    for (var i = 0; i < steps; i++) {
         let h = scene(ro + rd * t, t, footprint, false);
-        if (h.d < 0.0008 * t + 0.01) {
+        if (h.d < eps_t * t + eps_0) {
             *out = h;
             return t;
         }
@@ -529,7 +537,7 @@ fn composite_cube(ro: vec3f, rd: vec3f, tmax: f32) -> vec4f {
     }
     let t0 = max(b.t0, 0.0);
     let t1 = min(b.t1, tmax);
-    let dt = 1.0 / n; // half a voxel (cube is 2 units wide)
+    let dt = select(1.0, 2.0, P.low != 0) / n; // half a voxel (cube is 2 units wide); a whole one in low quality
     let vox = 2.0 / n;
     for (var t = t0 + dt * 0.5; t < t1; t += dt) {
         let p = ro + rd * t;
@@ -707,7 +715,7 @@ fn observe(ro: vec3f, rd: vec3f) -> vec3f {
     let h = trace_room(ro, rd);
     let s = room_surface(h);
     var bg = s.col;
-    if (s.gloss > 0.0) {
+    if (s.gloss > 0.0 && P.low == 0) {
         let cosi = abs(rd.y);
         let fres = 0.05 + 0.95 * pow(1.0 - cosi, 5.0);
         let refl = observe_reflected(h.p + vec3f(0.0, 0.001, 0.0), vec3f(rd.x, -rd.y, rd.z));

@@ -49,12 +49,13 @@ pub const Params = extern struct {
     base_alpha: f32,
     edge_gain: f32,
     marker: [4]f32,
+    low: i32,
     bodies: [max_bodies]Body,
 };
 
 comptime {
     std.debug.assert(@sizeOf(Body) == 26 * 4);
-    std.debug.assert(@sizeOf(Params) == (16 + 4 + 3 + 2 + 2 + 14 + 2 + 4) * 4 + max_bodies * @sizeOf(Body));
+    std.debug.assert(@sizeOf(Params) == (16 + 4 + 3 + 2 + 2 + 14 + 2 + 4 + 1) * 4 + max_bodies * @sizeOf(Body));
 }
 
 // ---------------------------------------------------------------------------

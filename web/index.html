@@ -8,12 +8,16 @@
   :root { color-scheme: dark; }
   html, body { margin: 0; height: 100%; background: #05070b; color: #9fb0c0; font: 14px/1.5 ui-monospace, monospace; }
   body { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; }
-  canvas { display: block; width: min(100vw, calc((100vh - 64px) * 16 / 9)); aspect-ratio: 16 / 9; background: #000; cursor: crosshair; }
+  canvas { display: block; width: min(100vw, calc((100vh - 96px) * 16 / 9)); aspect-ratio: 16 / 9; background: #000; cursor: crosshair; }
   #status { position: fixed; top: 40%; left: 0; right: 0; text-align: center; font-size: 16px; padding: 0 16px; }
   #status.error { color: #ff6a55; }
   .hidden { display: none; }
   footer { padding: 0 16px; text-align: center; }
   a { color: #6ec8ff; }
+  details { box-sizing: border-box; width: min(860px, 100%); padding: 0 16px 16px; }
+  summary { cursor: pointer; color: #c9a85a; }
+  details p, details li { margin: 6px 0; }
+  code { color: #d8e2ec; overflow-wrap: anywhere; }
 </style>
 </head>
 <body>
@@ -23,6 +27,29 @@
   Click to fly · WASD/Space/Z move · R/F ana/kata · mouse turns · V/B views · C walk the room · ` options and all controls ·
   <a href="https://github.com/pa255ion/4d-space-explorer">source</a>
 </footer>
+<details id="webgpu-note">
+  <summary>Linux, the “Unsafe WebGPU” flag, and security</summary>
+  <p>On Windows, macOS and ChromeOS, current Chrome, Edge and Safari support WebGPU with no setup.
+  On Linux, Chromium-based browsers (Chrome, Brave, Edge) currently only offer it with two flags
+  turned on: <code>#enable-unsafe-webgpu</code> and <code>#enable-vulkan</code>.</p>
+  <p><strong>The “unsafe” flag is a real security trade-off.</strong> It turns on WebGPU where the
+  browser hasn't finished security-reviewing the GPU stack, bypasses the browser's list of GPU drivers
+  known to be unsafe, and exposes experimental GPU features. It applies to <em>every</em> website
+  you visit, not just this one. A malicious page could exploit bugs in the browser's WebGPU code or
+  in your GPU driver to crash the browser or graphics, and in the worst case read memory it shouldn't
+  or escape the browser's GPU sandbox.</p>
+  <ul>
+    <li>Safest: use a separate browser instance only for this, started from a terminal with its own
+      profile, and don't browse elsewhere with it, e.g.<br>
+      <code>brave-browser --user-data-dir="$HOME/.cache/webgpu-profile" --enable-unsafe-webgpu --enable-features=Vulkan</code><br>
+      (use your browser's own command: <code>google-chrome</code>, <code>chromium</code>, …).</li>
+    <li>Otherwise, turn the flags off again in <code>brave://flags</code> / <code>chrome://flags</code> when you're done.</li>
+    <li>Keep the browser and your GPU drivers up to date either way.</li>
+  </ul>
+  <p>If the game says <strong>SOFTWARE RENDERER</strong>, WebGPU is running on your CPU, not your GPU
+  (very slow). That usually means the Vulkan flag is off or the browser can't reach your GPU driver:
+  check that <code>brave://gpu</code> / <code>chrome://gpu</code> says “WebGPU: Hardware accelerated”.</p>
+</details>
 <script type="module" src="app.js"></script>
 </body>
 </html>

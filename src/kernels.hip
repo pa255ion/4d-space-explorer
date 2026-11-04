@@ -49,6 +49,7 @@ struct Params {
     int room;         // draw the observatory room (else a dark void)
     float base_alpha, edge_gain;
     float marker[4];  // retina-space (u, v, s) of the target marker, w > 0 = visible
+    int low;          // low quality: fewer octaves and steps, no reflections (shadows are off too)
     Body bodies[MAX_BODIES];
 };
 
@@ -152,11 +153,15 @@ __device__ __host__ inline float terrain_height(const Body& b, v4 dir, int octav
 // bounding shell (a loose lower bound), not to an actual surface.
 struct Hit { float d; int body; int mat; bool shell; };
 
-__device__ inline int lod_octaves(const Body& b, float t, float footprint) {
-    // Stop adding octaves once their wavelength is below ~2 retina voxels.
-    float px = fmaxf(t * footprint, 0.05f);
+// Low quality caps terrain octaves here and coarsens the LOD by 2x.
+#define LOW_OCTAVES 5
+
+__device__ inline int lod_octaves(const Body& b, float t, float footprint, int low) {
+    // Stop adding octaves once their wavelength is below ~2 retina voxels
+    // (~4 in low quality).
+    float px = fmaxf(t * footprint, 0.05f) * (low ? 2.0f : 1.0f);
     float o = log2f(b.feature / (2.0f * px)) + 1.0f;
-    return (int)clampf(o, 1.0f, (float)MAX_OCTAVES);
+    return (int)clampf(o, 1.0f, (float)(low ? LOW_OCTAVES : MAX_OCTAVES));
 }
 
 // shadow = true is the variant for shadow rays: stars are skipped (they're
@@ -183,7 +188,7 @@ __device__ inline Hit scene(const Params& P, v4 p, float t, float footprint) {
                 d = r - bound;
                 shell = true;
             } else {
-                float hgt = terrain_height(b, rel * (1.0f / r), lod_octaves(b, t, footprint));
+                float hgt = terrain_height(b, rel * (1.0f / r), lod_octaves(b, t, footprint, P.low));
                 if (shadow && b.sea > -b.amp) hgt = fmaxf(hgt, b.sea);
                 d = (r - b.radius - hgt) * 0.5f;  // Lipschitz safety for steep noise
                 if (!shadow && b.sea > -b.amp) {
@@ -199,9 +204,11 @@ __device__ inline Hit scene(const Params& P, v4 p, float t, float footprint) {
 
 __device__ inline float march(const Params& P, v4 ro, v4 rd, float tmax, float footprint, Hit& out) {
     float t = 0.05f;
-    for (int i = 0; i < 220; i++) {
+    int steps = P.low ? 120 : 220;
+    float eps_t = P.low ? 0.002f : 0.0008f, eps_0 = P.low ? 0.02f : 0.01f;
+    for (int i = 0; i < steps; i++) {
         Hit h = scene(P, ro + rd * t, t, footprint);
-        if (h.d < 0.0008f * t + 0.01f) { out = h; return t; }
+        if (h.d < eps_t * t + eps_0) { out = h; return t; }
         t += h.d;
         if (t > tmax) break;
     }
@@ -275,7 +282,7 @@ __device__ inline c3 shade(const Params& P, v4 ro, v4 rd, float t, Hit h, float 
     v4 rel = p - ld(b.c);
     float r = len(rel);
     v4 up = rel * (1.0f / r);
-    int oct = lod_octaves(b, t, footprint);
+    int oct = lod_octaves(b, t, footprint, P.low);
     v4 n;
     float hgt;
     if (h.mat == 1 || b.amp <= 0.0f) {
@@ -468,7 +475,7 @@ __device__ inline void composite_cube(const Params& P, const uchar4* vol, f3 ro,
     if (!box_hit(ro, rd, lo, hi, t0, t1, face)) return;
     t0 = fmaxf(t0, 0.0f);
     t1 = fminf(t1, tmax);
-    float step = 1.0f / n;  // half a voxel (cube is 2 units wide)
+    float step = (P.low ? 2.0f : 1.0f) / n;  // half a voxel (cube is 2 units wide); a whole one in low quality
     float vox = 2.0f / n;
     for (float t = t0 + step * 0.5f; t < t1; t += step) {
         f3 p = ro + rd * t;
@@ -597,7 +604,7 @@ __device__ inline c3 observe(const Params& P, const uchar4* vol, f3 ro, f3 rd, f
         tsurf = h.t;
         float gloss;
         bg = room_surface(h, gloss);
-        if (allow_reflection && gloss > 0.0f) {
+        if (allow_reflection && gloss > 0.0f && !P.low) {
             float cosi = fabsf(rd.y);
             float fres = 0.05f + 0.95f * powf(1.0f - cosi, 5.0f);
             f3 rr = m3(rd.x, -rd.y, rd.z);

@@ -44,12 +44,18 @@ async function main() {
     } else if (/Chrome\//.test(ua) && linux) {
       // Brave reports a Chrome user agent; navigator.brave tells them apart.
       const s = navigator.brave ? 'brave' : 'chrome';
-      hint = `On Linux: enable ${s}://flags/#enable-unsafe-webgpu and #enable-vulkan, restart, ` +
-        `and check ${s}://gpu for "WebGPU: Hardware accelerated".` +
+      hint = `On Linux this needs ${s}://flags/#enable-unsafe-webgpu and #enable-vulkan ` +
+        `(then restart, and check ${s}://gpu for "WebGPU: Hardware accelerated"). ` +
+        'Read the security note below before enabling them.' +
         (navigator.brave ? ' If it still fails, try with Shields down for this site.' : '');
+      document.getElementById('webgpu-note').open = true;
     }
     return fail('WebGPU is available but found no usable GPU. ' + hint);
   }
+  const ai = adapter.info ?? {};
+  const fallback = ai.isFallbackAdapter ?? adapter.isFallbackAdapter ?? false;
+  const adapterName = [ai.vendor, ai.architecture, ai.device, ai.description].filter((x) => x).join(' ') || 'unknown';
+  console.log(`space4d: WebGPU adapter: ${adapterName}${fallback ? ' (SOFTWARE fallback)' : ''}`);
   const device = await adapter.requestDevice();
   device.lost.then((info) => info.reason !== 'destroyed' && fail('GPU device lost: ' + info.message));
   device.addEventListener('uncapturederror', (e) => fail('GPU error: ' + e.error.message));
@@ -64,6 +70,12 @@ async function main() {
   let saved = '';
   try { saved = localStorage.getItem(CONFIG_KEY) ?? ''; } catch { /* storage blocked */ }
   game.init(saved);
+  // A software (CPU) adapter, e.g. Chromium's SwiftShader when WebGPU is
+  // forced on without GPU access: very slow, so the game starts in low quality.
+  if (fallback) {
+    z.softwareRenderer();
+    document.getElementById('webgpu-note').open = true;
+  }
 
   canvas.width = z.hudWidth();
   canvas.height = z.hudHeight();
@@ -124,8 +136,9 @@ async function main() {
   const MAX_IN_FLIGHT = 2;
   let last = performance.now();
   let inFlight = 0;
-  // Visible in the console as space4d: rendered frames and skipped vsyncs.
-  const stats = (window.space4d = { frames: 0, skipped: 0 });
+  // Visible in the console as `space4d`: the adapter, rendered frames,
+  // skipped vsyncs, and how long the GPU took to finish the last frame.
+  const stats = (window.space4d = { adapter: adapterName, software: fallback, frames: 0, skipped: 0, gpuMs: 0 });
   const tick = (now) => {
     if (inFlight >= MAX_IN_FLIGHT) {
       stats.skipped++;
@@ -136,7 +149,12 @@ async function main() {
     renderer.frame(ctx.getCurrentTexture().createView());
     stats.frames++;
     inFlight++;
-    device.queue.onSubmittedWorkDone().then(() => inFlight--);
+    const submitted = performance.now();
+    // .finally: a rejected promise (device lost, page torn down) must not
+    // leave the frame counted as in flight forever, which would freeze the game.
+    device.queue.onSubmittedWorkDone()
+      .then(() => { stats.gpuMs = Math.round((performance.now() - submitted) * 10) / 10; })
+      .finally(() => { inFlight--; });
   };
   const guarded = (now) => {
     try {

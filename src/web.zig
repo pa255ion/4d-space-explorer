@@ -104,6 +104,18 @@ export fn setCaptured(on: bool) void {
     if (!on) g.orbiting = false;
 }
 
+/// The browser gave us a software (CPU) WebGPU adapter: it will be very
+/// slow, so start in low quality and say why.
+export fn softwareRenderer() void {
+    g.s.low_quality = true;
+    // CPU rendering is orders of magnitude slower: start at the smallest
+    // sizes (auto can still climb if there's headroom).
+    g.s.render_scale = 0;
+    auto_retina.level = 0;
+    auto_slice.level = 0;
+    g.warning = "SOFTWARE RENDERER - THE BROWSER IS NOT USING YOUR GPU (SEE THE NOTE BELOW)";
+}
+
 export fn menuOpen() bool {
     return g.menu.open;
 }
@@ -149,10 +161,14 @@ const Auto = struct {
     }
 };
 
-const auto_scales = [_]f32{ 0.5, 0.625, 0.75, 0.875, 1.0 };
-var auto_slice = Auto{ .level = 2 };
-var auto_retina = Auto{ .level = 1 }; // index into settings.retina_sizes: 64
+const auto_scales = [_]f32{ 0.375, 0.5, 0.625, 0.75, 0.875, 1.0 };
+var auto_slice = Auto{ .level = 3 }; // 0.75
+var auto_retina = Auto{ .level = std.mem.indexOfScalar(i32, &settings_mod.retina_sizes, 64).? };
 var avg_dt: f64 = 0;
+/// Consecutive judgments at the lowest level that were still far too slow;
+/// after a few, auto mode switches to low quality (once per session).
+var hopeless: u32 = 0;
+var auto_lowered = false;
 var judge_timer: f64 = 0;
 var last_view: settings_mod.View = .retina;
 
@@ -178,9 +194,18 @@ fn updateScale(raw_dt: f64) void {
     auto_retina.level = @min(auto_retina.level, top_n);
     if (auto and judge_timer >= 1.0 and !g.menu.open) {
         judge_timer = 0;
-        switch (s.view) {
-            .slice => auto_slice.judge(avg_dt, auto_scales.len - 1),
-            .retina => auto_retina.judge(avg_dt, top_n),
+        const a = switch (s.view) {
+            .slice => &auto_slice,
+            .retina => &auto_retina,
+        };
+        a.judge(avg_dt, if (s.view == .slice) auto_scales.len - 1 else top_n);
+        hopeless = if (a.level == 0 and avg_dt > 1.0 / 30.0) hopeless + 1 else 0;
+        if (hopeless >= 3 and !s.low_quality and !auto_lowered) {
+            auto_lowered = true;
+            s.low_quality = true;
+            save_pending = true;
+            g.notice = "STILL SLOW AT THE LOWEST RESOLUTION: SWITCHED TO LOW QUALITY (` MENU TO CHANGE)";
+            g.notice_time = 6;
         }
     }
     const scale = if (!auto) settings_mod.render_scales[s.render_scale] else switch (s.view) {

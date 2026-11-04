@@ -123,6 +123,8 @@ pub fn main(init: std.process.Init.Minimal) !void {
             opt.n_turns += 1;
         } else if (std.mem.eql(u8, a, "--target")) {
             g.s.target = try arg.num(usize, &it);
+        } else if (std.mem.eql(u8, a, "--low")) {
+            g.s.low_quality = true;
         } else if (std.mem.eql(u8, a, "--no-shadows")) {
             g.s.shadows = false;
         } else {

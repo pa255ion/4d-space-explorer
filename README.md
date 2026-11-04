@@ -35,17 +35,39 @@ after an update; a hard refresh picks up the new ones.
   `web/app.js` only forwards raw input and runs the GPU passes.
   `web/shaders.wgsl` is a port of `src/kernels.hip`; keep the two in sync.
 - **Needs WebGPU**: current Chrome or Edge, Safari 26+, or Firefox on Windows.
-  Other browsers get a message instead of the game.
+  Other browsers get a message instead of the game. On Linux, Chromium-based
+  browsers (Chrome, Brave, Edge) need `#enable-unsafe-webgpu` and
+  `#enable-vulkan` in `chrome://flags` / `brave://flags`.
+  - **Security:** the unsafe flag enables WebGPU for every site, on a GPU
+    stack the browser hasn't finished reviewing, and bypasses the GPU driver
+    blocklist. A malicious page could exploit WebGPU or driver bugs. Prefer a
+    separate browser instance with its own profile for this (e.g.
+    `brave-browser --user-data-dir=... --enable-unsafe-webgpu --enable-features=Vulkan`),
+    or turn the flags off afterwards. The page explains this too.
+  - **Software rendering:** without GPU access, the unsafe flag can give
+    Chromium's CPU renderer (SwiftShader). The game detects that, warns on
+    the HUD and starts at the lowest settings, but it will still be slow.
+  - **Diagnostics:** the console logs the WebGPU adapter in use. Typing
+    `space4d` in the console shows the adapter, rendered and skipped frames,
+    and the last frame's GPU time.
 - **Differences from native.**
   - Thrust down defaults to **Z** rather than Ctrl, since Ctrl+W closes the tab.
   - Esc only releases the mouse; click the view to capture it again.
   - Settings are saved in the browser's local storage.
   - The retina resolution goes up to 96³.
+- **GRAPHICS QUALITY: LOW** (menu, native too) caps terrain detail at 5
+  octaves with a coarser LOD, turns off shadows and floor reflections, takes
+  fewer, looser ray steps and halves the cube's compositing samples. That
+  halves the frame time at the same resolution, and the new 32³ retina size
+  goes much further. Collision still uses the full-detail terrain, so landed
+  ships can sit a few metres off the smoothed surface.
 - **RENDER RESOLUTION** (menu, web only) defaults to AUTO, which adapts to
   the visitor's GPU. In slice view it lowers the pixel count, because that
   view's cost grows with pixels. In cube view it lowers the retina
   resolution instead (capped by RETINA RESOLUTION), because the N³ rays
-  dominate there and compositing is cheap. The HUD shows what is in use.
+  dominate there and compositing is cheap. The HUD shows what is in use. If
+  frames stay under 30 FPS at the lowest level, it switches to low quality
+  once and says so.
 
 ## How to read the retina cube
 
@@ -164,7 +186,7 @@ Settings are saved to `~/.config/space4d.cfg`.
 `--slice`, `--n N`, `--slab S`, `--opacity A`,
 `--spawn PLANET ALT`, `--sim SECONDS`, `--turn A B ANGLE` (rotate local axis B
 toward A; 0=right 1=up 2=fwd 3=ana), `--target I`, `--no-shadows`,
-`--axes K`, `--motion static|rails|nbody`, `--obs YAW PITCH DIST` (orbit
+`--axes K`, `--motion static|rails|nbody`, `--low`, `--obs YAW PITCH DIST` (orbit
 view), `--eye X Y Z YAW PITCH` (standing in the room), `--no-room`, `--menu`.
 
 ## Files

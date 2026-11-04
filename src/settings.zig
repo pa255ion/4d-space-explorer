@@ -130,7 +130,7 @@ pub const axis_presets = [_]struct { name: []const u8, map: [4]u2 }{
 };
 
 pub const warps = [_]u8{ 1, 2, 4, 8, 16 };
-pub const retina_sizes = [_]i32{ 48, 64, 80, 96, 128, 160 };
+pub const retina_sizes = [_]i32{ 32, 48, 64, 80, 96, 128, 160 };
 pub const max_retina: i32 = if (is_web) 96 else 160;
 /// Web only: fraction of the 1280x720 frame actually rendered. Index 0 is
 /// auto, which in slice view picks the scale and in cube view the retina
@@ -145,6 +145,8 @@ pub const Settings = struct {
     pause_in_menu: bool = true,
     // View
     view: View = .retina,
+    /// Coarser terrain, no shadows or reflections, fewer ray steps.
+    low_quality: bool = false,
     axes: u8 = 0,
     fov_deg: f32 = 74,
     n: i32 = 96,
