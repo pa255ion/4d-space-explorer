@@ -7,6 +7,8 @@ const hud = @import("hud.zig");
 const settings_mod = @import("settings.zig");
 const menu_mod = @import("menu.zig");
 const observer = @import("observer.zig");
+const touch_mod = @import("touch.zig");
+const pad_mod = @import("pad.zig");
 const Observer = observer.Observer;
 const V4 = m4.V4;
 const Settings = settings_mod.Settings;
@@ -20,6 +22,38 @@ const Action = settings_mod.Action;
 // ---------------------------------------------------------------------------
 
 pub const obs_fov: f32 = 0.6;
+
+/// Analog input for one frame from touch controls or a gamepad, added to
+/// the keyboard's. Values are -1..1 in the same sense as the actions
+/// (thrust: right, up, fwd, ana; turns: positive toward ana / roll right).
+pub const Analog = struct {
+    thrust: [4]f64 = .{ 0, 0, 0, 0 },
+    roll: f64 = 0,
+    turn_right_ana: f64 = 0,
+    turn_up_ana: f64 = 0,
+    turn_fwd_ana: f64 = 0,
+    boost: bool = false,
+    /// Look movement this frame in mouse-pixel units (ship yaw/pitch, or
+    /// the room view / cube orbit).
+    look: [2]f32 = .{ 0, 0 },
+    /// Direct 4D turn this frame, same units: [fwd->ana, up->ana].
+    look4d: [2]f32 = .{ 0, 0 },
+    orbit: bool = false,
+
+    pub fn add(a: Analog, b: Analog) Analog {
+        var r = a;
+        for (&r.thrust, b.thrust) |*x, y| x.* += y;
+        r.roll += b.roll;
+        r.turn_right_ana += b.turn_right_ana;
+        r.turn_up_ana += b.turn_up_ana;
+        r.turn_fwd_ana += b.turn_fwd_ana;
+        r.boost = a.boost or b.boost;
+        r.look = .{ a.look[0] + b.look[0], a.look[1] + b.look[1] };
+        r.look4d = .{ a.look4d[0] + b.look4d[0], a.look4d[1] + b.look4d[1] };
+        r.orbit = a.orbit or b.orbit;
+        return r;
+    }
+};
 
 pub const Game = struct {
     ship: physics.Ship,
@@ -44,6 +78,10 @@ pub const Game = struct {
     notice_time: f64 = 0,
     /// Shown permanently under the HUD bar (web: software renderer warning).
     warning: []const u8 = "",
+    /// On-screen touch controls (web; enabled by the first touch).
+    touch: touch_mod.Touch = .{},
+    /// Gamepad mapping state.
+    pad: pad_mod.Pad = .{},
 
     pub fn init(s: Settings) Game {
         var g = Game{ .ship = undefined, .sys = system.System.init(s.motion), .s = s };
@@ -81,6 +119,24 @@ pub const Game = struct {
             g.ship.vel = g.sys.vel[g.ship.ref];
         } else {
             physics.step(&g.ship, &g.sys, in);
+        }
+    }
+
+    /// Mouse-style look: `dx`, `dy` in mouse pixels (y down).
+    fn look(g: *Game, dx: f32, dy: f32, orbit: bool) void {
+        if (dx == 0 and dy == 0) return;
+        const s = &g.s;
+        const fx = dx * s.mouse_sens;
+        const fy = dy * s.mouse_sens * @as(f32, if (s.invert_y) -1 else 1);
+        if (orbit) {
+            g.obs.orbit(-fx * 0.005, fy * 0.005);
+        } else if (g.room_mode) {
+            g.obs.look(fx * 0.0025, -fy * 0.0025);
+        } else if (!g.ship.crashed) {
+            // Mouse look acts like reaction wheels: direct attitude change.
+            g.ship.frame.rotate(m4.right, m4.fwd, @as(f64, fx) * 0.0022);
+            g.ship.frame.rotate(m4.up, m4.fwd, -@as(f64, fy) * 0.0022);
+            g.ship.frame.orthonormalize();
         }
     }
 
@@ -149,7 +205,7 @@ pub const Game = struct {
     /// One displayed frame: poll held keys (`keys[scancode]` != 0) and the
     /// mouse motion since the last frame, then run as many fixed physics
     /// steps as `frame_dt` (times the warp) covers.
-    pub fn update(g: *Game, keys: []const u8, mouse_dx: f32, mouse_dy: f32, frame_dt: f64) void {
+    pub fn update(g: *Game, keys: []const u8, mouse_dx: f32, mouse_dy: f32, an: Analog, frame_dt: f64) void {
         g.notice_time -= frame_dt;
         if (frame_dt > 0) g.fps = if (g.fps == 0) 1 / frame_dt else g.fps * 0.92 + 0.08 / frame_dt;
         const s = &g.s;
@@ -164,46 +220,51 @@ pub const Game = struct {
                 return held(ks, st, pos) - held(ks, st, neg);
             }
         }.f;
+        const c1 = struct {
+            fn f(x: f64) f64 {
+                return std.math.clamp(x, -1, 1);
+            }
+        }.f;
         var in = physics.Input{};
         const controls_live = !g.menu.open;
+        const thrust = [4]f64{
+            c1(axis(keys, s, .right, .left) + an.thrust[0]),
+            c1(axis(keys, s, .up, .down) + an.thrust[1]),
+            c1(axis(keys, s, .fwd, .back) + an.thrust[2]),
+            c1(axis(keys, s, .ana, .kata) + an.thrust[3]),
+        };
+        const boost = held(keys, s, .boost) > 0 or an.boost;
         if (controls_live and g.room_mode) {
-            const run: f32 = if (held(keys, s, .boost) > 0) 5.0 else 2.5;
+            const run: f64 = if (boost) 5.0 else 2.5;
             g.obs.walk(.{
-                @floatCast(axis(keys, s, .right, .left) * run),
-                @floatCast(axis(keys, s, .up, .down) * 1.5),
-                @floatCast(axis(keys, s, .fwd, .back) * run),
+                @floatCast(thrust[0] * run),
+                @floatCast(thrust[1] * 1.5),
+                @floatCast(thrust[2] * run),
             }, @floatCast(frame_dt));
         } else if (controls_live) {
-            in.thrust = .{
-                axis(keys, s, .right, .left),
-                axis(keys, s, .up, .down),
-                axis(keys, s, .fwd, .back),
-                axis(keys, s, .ana, .kata),
-            };
-            in.boost = held(keys, s, .boost) > 0;
+            in.thrust = thrust;
+            in.boost = boost;
             // Plane order: (R,U) (R,F) (R,A) (U,F) (U,A) (F,A); positive turns
             // the second axis toward the first.
             in.rot = .{
-                axis(keys, s, .roll_right, .roll_left),
+                c1(axis(keys, s, .roll_right, .roll_left) + an.roll),
                 axis(keys, s, .yaw_right, .yaw_left),
-                -axis(keys, s, .turn_right_ana, .turn_right_kata),
+                -c1(axis(keys, s, .turn_right_ana, .turn_right_kata) + an.turn_right_ana),
                 axis(keys, s, .pitch_up, .pitch_down),
-                -axis(keys, s, .turn_up_ana, .turn_up_kata),
-                -axis(keys, s, .turn_fwd_ana, .turn_fwd_kata),
+                -c1(axis(keys, s, .turn_up_ana, .turn_up_kata) + an.turn_up_ana),
+                -c1(axis(keys, s, .turn_fwd_ana, .turn_fwd_kata) + an.turn_fwd_ana),
             };
         }
 
-        if (g.captured and controls_live) {
-            const fx = mouse_dx * s.mouse_sens;
-            const fy = mouse_dy * s.mouse_sens * @as(f32, if (s.invert_y) -1 else 1);
-            if (g.orbiting) {
-                g.obs.orbit(-fx * 0.005, fy * 0.005);
-            } else if (g.room_mode) {
-                g.obs.look(fx * 0.0025, -fy * 0.0025);
-            } else if (!g.ship.crashed) {
-                // Mouse look acts like reaction wheels: direct attitude change.
-                g.ship.frame.rotate(m4.right, m4.fwd, @as(f64, fx) * 0.0022);
-                g.ship.frame.rotate(m4.up, m4.fwd, -@as(f64, fy) * 0.0022);
+        if (controls_live) {
+            const mx: f32 = if (g.captured) mouse_dx else 0;
+            const my: f32 = if (g.captured) mouse_dy else 0;
+            g.look(mx + an.look[0], my + an.look[1], g.orbiting or an.orbit);
+            if (!g.room_mode and !g.ship.crashed and (an.look4d[0] != 0 or an.look4d[1] != 0)) {
+                // Direct 4D turns (touch drags in 4D mode): forward toward
+                // ana, and up toward ana.
+                g.ship.frame.rotate(m4.ana, m4.fwd, @as(f64, an.look4d[0] * s.mouse_sens) * 0.0022);
+                g.ship.frame.rotate(m4.ana, m4.up, -@as(f64, an.look4d[1] * s.mouse_sens) * 0.0022);
                 g.ship.frame.orthonormalize();
             }
         }
@@ -410,7 +471,7 @@ pub fn drawHud(c: hud.Canvas, g: *Game) void {
     if (g.notice_time > 0 and !g.menu.open) {
         c.text(@intCast((c.width -| hud.textWidth(g.notice, 2)) / 2), 110, 2, amber, g.notice);
     }
-    if (!g.captured and !g.menu.open) {
+    if (!g.captured and !g.menu.open and !g.touch.enabled) {
         const msg = "CLICK TO CAPTURE THE MOUSE";
         c.text(@intCast((c.width -| hud.textWidth(msg, 2)) / 2), bottom - 26, 2, amber, msg);
     }
@@ -426,5 +487,10 @@ pub fn drawHud(c: hud.Canvas, g: *Game) void {
             if (sx > -100 and sx < W + 100 and sy > -100 and sy < H + 100) c.ring(@intFromFloat(sx), @intFromFloat(sy), 9, amber);
         }
     }
+    if (g.pad.connected and g.pad.mode4d and !g.menu.open) {
+        const msg = "PAD 4D MODE: RIGHT STICK TURNS INTO ANA (L3 TO EXIT)";
+        c.text(@intCast((c.width -| hud.textWidth(msg, 2)) / 2), bottom - 52, 2, cyan, msg);
+    }
     if (g.menu.open) g.menu.draw(c, s);
+    g.touch.draw(c, g);
 }

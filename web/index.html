@@ -8,7 +8,11 @@
   :root { color-scheme: dark; }
   html, body { margin: 0; height: 100%; background: #05070b; color: #9fb0c0; font: 14px/1.5 ui-monospace, monospace; }
   body { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; }
-  canvas { display: block; width: min(100vw, calc((100vh - 96px) * 16 / 9)); aspect-ratio: 16 / 9; background: #000; cursor: crosshair; }
+  canvas { display: block; width: min(100vw, calc((100vh - 96px) * 16 / 9)); aspect-ratio: 16 / 9; background: #000; cursor: crosshair; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+  /* Fullscreen (the FULL touch button): just the game, as large as fits. */
+  html:fullscreen body { gap: 0; }
+  html:fullscreen canvas { width: min(100vw, calc(100vh * 16 / 9)); }
+  html:fullscreen footer, html:fullscreen details { display: none; }
   #status { position: fixed; top: 40%; left: 0; right: 0; text-align: center; font-size: 16px; padding: 0 16px; }
   #status.error { color: #ff6a55; }
   .hidden { display: none; }
@@ -25,6 +29,7 @@
 <div id="status">Starting…</div>
 <footer>
   Click to fly · WASD/Space/Z move · R/F ana/kata · mouse turns · V/B views · C walk the room · ` options and all controls ·
+  touch screens and gamepads work too ·
   <a href="https://github.com/pa255ion/4d-space-explorer">source</a>
 </footer>
 <details id="webgpu-note">

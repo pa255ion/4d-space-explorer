@@ -88,11 +88,31 @@ const sc_up = 82;
 const sc_pgdn = 78;
 const sc_pgup = 75;
 
+// Layout, shared by `draw` and `rowAt` (touch).
+const line_h = 20;
+const panel_w = 860;
+const panel_top = 120;
+
+fn visibleRows(height: usize) usize {
+    return (height - panel_top - 70) / line_h;
+}
+
+pub const sc_keys = struct {
+    pub const escape = sc_escape;
+    pub const enter = sc_enter;
+    pub const left = sc_left;
+    pub const right = sc_right;
+    pub const up = sc_up;
+    pub const down = sc_down;
+};
+
 pub const Menu = struct {
     open: bool = false,
     cursor: usize = 1,
     scroll: usize = 0,
     rebinding: ?Action = null,
+    /// Touch controls are in use (changes the hint line).
+    touch: bool = false,
 
     pub fn key(self: *Menu, s: *Settings, sc: u16) Command {
         if (self.rebinding) |a| {
@@ -130,11 +150,25 @@ pub const Menu = struct {
         self.cursor = @intCast(c);
     }
 
+    /// Touch: the item under HUD point (x, y), if it's a selectable row.
+    pub fn rowAt(self: *const Menu, width: usize, height: usize, x: f32, y: f32) ?usize {
+        const x0: f32 = @floatFromInt((width -| panel_w) / 2);
+        if (x < x0 or x > x0 + panel_w or y < panel_top) return null;
+        const row: usize = @intFromFloat((y - panel_top) / line_h);
+        if (row >= visibleRows(height)) return null;
+        const idx = self.scroll + row;
+        if (idx >= items.len or items[idx] == .header) return null;
+        return idx;
+    }
+
+    pub fn isBinding(idx: usize) bool {
+        return items[idx] == .bind;
+    }
+
     pub fn draw(self: *Menu, c: hud.Canvas, s: *const Settings) void {
-        const line_h = 20;
-        const w = 860;
-        const top = 120;
-        const visible = (c.height - top - 70) / line_h;
+        const w = panel_w;
+        const top = panel_top;
+        const visible = visibleRows(c.height);
         // Keep the cursor in view (and its section header when near the top).
         if (self.cursor < self.scroll + 1) self.scroll = self.cursor -| 1;
         if (self.cursor >= self.scroll + visible) self.scroll = self.cursor + 1 - visible;

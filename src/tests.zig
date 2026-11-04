@@ -6,4 +6,6 @@ test {
     _ = @import("settings.zig");
     _ = @import("observer.zig");
     _ = @import("game.zig");
+    _ = @import("touch.zig");
+    _ = @import("pad.zig");
 }

@@ -200,7 +200,7 @@ fn gpuCheck() !void {
 }
 
 fn interactive(g: *Game, opt: Options) !void {
-    if (sdl.SDL_Init(sdl.SDL_INIT_VIDEO) != 0) {
+    if (sdl.SDL_Init(sdl.SDL_INIT_VIDEO | sdl.SDL_INIT_GAMECONTROLLER) != 0) {
         std.debug.print("SDL_Init failed: {s}\n", .{sdl.SDL_GetError()});
         return error.SdlInitFailed;
     }
@@ -233,22 +233,14 @@ fn interactive(g: *Game, opt: Options) !void {
     _ = sdl.SDL_SetRelativeMouseMode(1);
     var ev: sdl.SDL_Event = .{};
     const freq: f64 = @floatFromInt(sdl.SDL_GetPerformanceFrequency());
+    var controller: ?*sdl.GameController = null;
     var last = sdl.SDL_GetPerformanceCounter();
 
     main_loop: while (true) {
         while (sdl.SDL_PollEvent(&ev) != 0) {
             switch (ev.kind()) {
                 sdl.SDL_QUIT => break :main_loop,
-                sdl.SDL_KEYDOWN => switch (g.keyDown(@intCast(ev.keyScancode()), ev.keyRepeat())) {
-                    .none => {},
-                    .menu_opened => setCapture(g, false),
-                    .menu_closed => {
-                        settings_mod.save(&g.s);
-                        setCapture(g, true);
-                    },
-                    // Esc releases the mouse; a second Esc quits.
-                    .escape => if (g.captured) setCapture(g, false) else break :main_loop,
-                },
+                sdl.SDL_KEYDOWN => if (pressKey(g, @intCast(ev.keyScancode()), ev.keyRepeat())) break :main_loop,
                 sdl.SDL_MOUSEBUTTONDOWN => {
                     if (g.menu.open) continue;
                     if (!g.captured) {
@@ -270,7 +262,13 @@ fn interactive(g: *Game, opt: Options) !void {
         var mdx: c_int = 0;
         var mdy: c_int = 0;
         _ = sdl.SDL_GetRelativeMouseState(&mdx, &mdy);
-        g.update(sdl.SDL_GetKeyboardState(null)[0..512], @floatFromInt(mdx), @floatFromInt(mdy), frame_dt);
+        var an = game.Analog{};
+        if (pollController(&controller)) |st| {
+            const o = g.pad.update(g, st.axes, st.buttons, @floatCast(frame_dt));
+            for (o.presses[0..o.n]) |sc| if (pressKey(g, sc, false)) break :main_loop;
+            an = o.analog;
+        } else g.pad.connected = false;
+        g.update(sdl.SDL_GetKeyboardState(null)[0..512], @floatFromInt(mdx), @floatFromInt(mdy), an, frame_dt);
 
         const params = buildParams(g, w, h);
         try gpu.frame(&params, g.s.view, pixels);
@@ -280,6 +278,57 @@ fn interactive(g: *Game, opt: Options) !void {
         _ = sdl.SDL_RenderCopy(renderer, texture, null, null);
         sdl.SDL_RenderPresent(renderer);
     }
+}
+
+/// A key press (keyboard or gamepad). Returns true to quit.
+fn pressKey(g: *Game, sc: u16, repeat: bool) bool {
+    switch (g.keyDown(sc, repeat)) {
+        .none => {},
+        .menu_opened => setCapture(g, false),
+        .menu_closed => {
+            settings_mod.save(&g.s);
+            setCapture(g, true);
+        },
+        // Esc releases the mouse; a second Esc quits.
+        .escape => if (g.captured) setCapture(g, false) else return true,
+    }
+    return false;
+}
+
+const pad_mod = @import("pad.zig");
+const PadState = struct { axes: [pad_mod.n_axes]f32, buttons: [pad_mod.n_buttons]f32 };
+
+/// The first game controller (opened on demand, dropped when unplugged),
+/// in the standard layout pad.zig expects.
+fn pollController(ctrl: *?*sdl.GameController) ?PadState {
+    if (ctrl.*) |c| if (sdl.SDL_GameControllerGetAttached(c) == 0) {
+        sdl.SDL_GameControllerClose(c);
+        ctrl.* = null;
+    };
+    if (ctrl.* == null) {
+        var i: c_int = 0;
+        while (i < sdl.SDL_NumJoysticks()) : (i += 1) {
+            if (sdl.SDL_IsGameController(i) != 0) {
+                ctrl.* = sdl.SDL_GameControllerOpen(i);
+                if (ctrl.* != null) break;
+            }
+        }
+    }
+    const c = ctrl.* orelse return null;
+    const ax = struct {
+        fn f(cc: *sdl.GameController, a: c_int) f32 {
+            return @as(f32, @floatFromInt(sdl.SDL_GameControllerGetAxis(cc, a))) / 32767.0;
+        }
+    }.f;
+    var st = PadState{ .axes = .{ ax(c, 0), ax(c, 1), ax(c, 2), ax(c, 3) }, .buttons = [_]f32{0} ** pad_mod.n_buttons };
+    // SDL button numbers for the standard layout's 0..16 (-1: an axis).
+    const sdl_button = [pad_mod.n_buttons]c_int{ 0, 1, 2, 3, 9, 10, -1, -1, 4, 6, 7, 8, 11, 12, 13, 14, 5 };
+    for (sdl_button, 0..) |b, i| {
+        if (b >= 0) st.buttons[i] = @floatFromInt(sdl.SDL_GameControllerGetButton(c, b));
+    }
+    st.buttons[pad_mod.B.lt] = @max(ax(c, 4), 0);
+    st.buttons[pad_mod.B.rt] = @max(ax(c, 5), 0);
+    return st;
 }
 
 fn setCapture(g: *Game, on: bool) void {

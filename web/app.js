@@ -112,7 +112,59 @@ async function main() {
     if (sc !== undefined) z.keyUp(sc);
   });
   window.addEventListener('blur', () => z.clearKeys());
+
+  // Menu transitions caused by touch or gamepad presses.
+  const applyCapture = () => {
+    const r = z.takeCaptureRequest();
+    if (r === 1 && locked()) document.exitPointerLock();
+    if (r === 2 && !touchUsed) lock();
+    if (z.takeSaveRequest()) save();
+  };
+
+  // Touch, pen, and the Meta Quest browser's controller laser (which arrives
+  // as a mouse pointer but can't use pointer lock) drive the on-screen
+  // controls. Coordinates go to the game in HUD pixels.
+  const quest = /OculusBrowser|Quest/.test(navigator.userAgent);
+  const isTouch = (e) => e.pointerType === 'touch' || e.pointerType === 'pen' || quest;
+  let touchUsed = false;
+  const hudPos = (e) => {
+    const r = canvas.getBoundingClientRect();
+    return [(e.clientX - r.left) / r.width * z.hudWidth(), (e.clientY - r.top) / r.height * z.hudHeight()];
+  };
+  const toggleFullscreen = () => {
+    if (document.fullscreenElement) {
+      document.exitFullscreen?.();
+    } else {
+      document.documentElement.requestFullscreen?.()
+        .then(() => screen.orientation?.lock?.('landscape').catch(() => {}))
+        .catch(() => {});
+    }
+  };
+  canvas.addEventListener('pointerdown', (e) => {
+    if (!isTouch(e)) return;
+    e.preventDefault(); // also suppresses the emulated mouse events
+    touchUsed = true;
+    canvas.setPointerCapture?.(e.pointerId);
+    const [x, y] = hudPos(e);
+    if (z.touchDown(e.pointerId, x, y) & 1) toggleFullscreen();
+    applyCapture();
+  });
+  canvas.addEventListener('pointermove', (e) => {
+    if (!isTouch(e)) return;
+    e.preventDefault();
+    const [x, y] = hudPos(e);
+    z.touchMove(e.pointerId, x, y);
+    applyCapture();
+  });
+  const touchEnd = (e) => {
+    if (!isTouch(e)) return;
+    z.touchUp(e.pointerId);
+  };
+  canvas.addEventListener('pointerup', touchEnd);
+  canvas.addEventListener('pointercancel', touchEnd);
+
   canvas.addEventListener('mousedown', (e) => {
+    if (quest) return;
     if (!locked() && !z.menuOpen()) lock();
     z.mouseButton(e.button, true);
   });
@@ -136,6 +188,18 @@ async function main() {
   // judging by those fast-looking frames, raises the cost even more. With
   // the limit, frame times (and so the FPS and auto quality) are real, and
   // the display is at most two frames behind.
+  // Gamepad: the first connected pad, preferring the standard mapping,
+  // copied into the game's pad buffer (4 axes, then 17 buttons) each frame.
+  const pollGamepad = () => {
+    const pads = navigator.getGamepads ? [...navigator.getGamepads()].filter((p) => p && p.connected) : [];
+    const gp = pads.find((p) => p.mapping === 'standard') ?? pads[0];
+    z.setPadConnected(!!gp);
+    if (!gp) return;
+    const buf = new Float32Array(z.memory.buffer, z.padPtr(), 4 + 17);
+    for (let i = 0; i < 4; i++) buf[i] = gp.axes[i] ?? 0;
+    for (let i = 0; i < 17; i++) buf[4 + i] = gp.buttons[i]?.value ?? 0;
+  };
+
   const MAX_IN_FLIGHT = 2;
   let last = performance.now();
   let inFlight = 0;
@@ -147,8 +211,10 @@ async function main() {
       stats.skipped++;
       return;
     }
+    pollGamepad();
     z.frame((now - last) / 1000);
     last = now;
+    applyCapture();
     renderer.frame(ctx.getCurrentTexture().createView());
     stats.frames++;
     inFlight++;

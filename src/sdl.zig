@@ -4,6 +4,7 @@
 // ---------------------------------------------------------------------------
 
 pub const SDL_INIT_VIDEO: u32 = 0x00000020;
+pub const SDL_INIT_GAMECONTROLLER: u32 = 0x00002000;
 pub const SDL_WINDOW_SHOWN: u32 = 0x00000004;
 pub const SDL_WINDOWPOS_CENTERED: c_int = 0x2FFF0000;
 pub const SDL_RENDERER_ACCELERATED: u32 = 0x00000002;
@@ -69,6 +70,16 @@ pub const SDL_Event = extern struct {
 };
 
 pub extern fn SDL_Init(flags: u32) c_int;
+
+// Game controllers (polled; SDL_PollEvent keeps their state current).
+pub const GameController = opaque {};
+pub extern fn SDL_NumJoysticks() c_int;
+pub extern fn SDL_IsGameController(index: c_int) c_int;
+pub extern fn SDL_GameControllerOpen(index: c_int) ?*GameController;
+pub extern fn SDL_GameControllerClose(c: *GameController) void;
+pub extern fn SDL_GameControllerGetAttached(c: *GameController) c_int;
+pub extern fn SDL_GameControllerGetAxis(c: *GameController, axis: c_int) i16;
+pub extern fn SDL_GameControllerGetButton(c: *GameController, button: c_int) u8;
 pub extern fn SDL_Quit() void;
 pub extern fn SDL_GetError() [*:0]const u8;
 pub extern fn SDL_CreateWindow(title: [*:0]const u8, x: c_int, y: c_int, w: c_int, h: c_int, flags: u32) ?*anyopaque;

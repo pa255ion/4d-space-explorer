@@ -69,10 +69,52 @@ export fn init(settings_len: usize) void {
 export fn keyDown(sc: u32, repeat: bool) u32 {
     if (sc >= keys.len) return 0;
     keys[sc] = 1;
-    const r = g.keyDown(@intCast(sc), repeat);
+    return press(@intCast(sc), repeat);
+}
+
+/// A key press from the keyboard, a touch button or a gamepad.
+fn press(sc: u16, repeat: bool) u32 {
+    const r = g.keyDown(sc, repeat);
     if (r == .menu_closed) save_pending = true;
     if (r == .menu_opened) g.orbiting = false;
+    if (r == .menu_opened or r == .menu_closed) capture_request = @intFromEnum(r);
     return @intFromEnum(r);
+}
+
+/// Menu transitions caused outside a key event (touch, gamepad): JS polls
+/// this after each frame and pointer event. Same codes as `keyDown`.
+var capture_request: u32 = 0;
+export fn takeCaptureRequest() u32 {
+    defer capture_request = 0;
+    return capture_request;
+}
+
+// Touch / pen / Quest laser pointer, in HUD pixels. Bit 0 of the result:
+// toggle fullscreen (JS must do it inside the event handler).
+export fn touchDown(id: u32, x: f32, y: f32) u32 {
+    return touchResult(g.touch.down(&g, id, x, y));
+}
+export fn touchMove(id: u32, x: f32, y: f32) u32 {
+    return touchResult(g.touch.move(&g, id, x, y));
+}
+export fn touchUp(id: u32) void {
+    g.touch.up(id);
+}
+fn touchResult(r: @import("touch.zig").Result) u32 {
+    if (r.key) |sc| _ = press(sc, false);
+    return @intFromBool(r.fullscreen);
+}
+
+// Gamepad state, written by JS before each `frame` (standard mapping).
+const pad = @import("pad.zig");
+var pad_state: [pad.n_axes + pad.n_buttons]f32 = [_]f32{0} ** (pad.n_axes + pad.n_buttons);
+var pad_connected = false;
+export fn padPtr() [*]f32 {
+    return &pad_state;
+}
+export fn setPadConnected(on: bool) void {
+    pad_connected = on;
+    if (!on) g.pad.connected = false;
 }
 
 export fn keyUp(sc: u32) void {
@@ -83,6 +125,7 @@ export fn keyUp(sc: u32) void {
 export fn clearKeys() void {
     @memset(&keys, 0);
     g.orbiting = false;
+    g.touch.clear();
 }
 
 export fn mouseMove(dx: f32, dy: f32) void {
@@ -130,7 +173,13 @@ export fn simulate(secs: f64) void {
 /// One animation frame: input, simulation, GPU parameters and HUD.
 export fn frame(raw_dt: f64) void {
     const dt = std.math.clamp(raw_dt, 0, 0.1);
-    g.update(&keys, mouse_dx, mouse_dy, dt);
+    var an = g.touch.analog();
+    if (pad_connected) {
+        const o = g.pad.update(&g, pad_state[0..pad.n_axes].*, pad_state[pad.n_axes..].*, @floatCast(dt));
+        for (o.presses[0..o.n]) |sc| _ = press(sc, false);
+        an = an.add(o.analog);
+    }
+    g.update(&keys, mouse_dx, mouse_dy, an, dt);
     mouse_dx = 0;
     mouse_dy = 0;
     updateScale(raw_dt);

@@ -192,6 +192,44 @@ Settings are saved to `~/.config/space4d.cfg`.
 | ` | options menu |
 | Esc | release mouse; again to quit |
 
+## Touch screens and gamepads
+
+**Touch** (web; phones, tablets, and the Meta Quest browser's laser pointer):
+the on-screen controls appear with the first touch.
+
+- Left side: a floating stick for thrust and strafe (it walks you in the
+  room).
+- Right side: drag to look. With ORBIT on, dragging orbits the cube.
+- Buttons for UP/DOWN, ANA/KATA, BOOST and ROLL. The top row has MENU,
+  VIEW, AXES, ROOM, TGT and FULL (fullscreen, landscape on phones).
+- **4D** mode turns the stick into ana/kata thrust and the right-to-ana
+  turn. Drags then turn forward and up into ana.
+- In the menu, tap a row to select it and tap it again to change it. Drag to
+  move through the list. The buttons on the right stand in for the arrow
+  keys.
+- On the Quest only one laser acts at a time, so you can't hold the stick
+  and look at once. A VR mode with real controller input is planned
+  separately.
+
+**Gamepads** (web through the Gamepad API, desktop through SDL; standard
+Xbox/PlayStation layout):
+
+| Input | Action |
+| --- | --- |
+| Left stick | thrust forward/back, strafe |
+| Right stick | look (in 4D mode: turn right / up toward ana) |
+| LT / RT | thrust down / up |
+| LB / RB | thrust kata / ana |
+| A (hold) | boost |
+| B / X / Y | retina/slice view, assist, cycle view axes |
+| D-pad up/down | turn forward toward ana / kata |
+| D-pad left/right | roll |
+| L3 / R3 | 4D mode / next target |
+| Back / Start | walk the room / menu |
+
+In the menu, the D-pad navigates (it repeats when held), A selects, B or
+Start closes, and LB/RB page.
+
 ## Headless screenshots
 
 `space4d --shot out.ppm` renders one frame without opening a window. Options:
@@ -212,6 +250,7 @@ view), `--eye X Y Z YAW PITCH` (standing in the room), `--no-room`, `--menu`.
 - `src/math4.zig`: 4D vectors and rotation frames (+ tests).
 - `src/render.zig`: HIP module/buffers/launches.
 - `src/game.zig`: platform-independent game: state, input handling, simulation step, GPU params, HUD.
+- `src/touch.zig`, `src/pad.zig`: on-screen touch controls and gamepad mapping (+ tests).
 - `src/main.zig`: native frontend (SDL window, HIP renderer, headless screenshots).
 - `src/web.zig`: browser frontend (wasm exports, auto quality).
 - `web/`: page, JS plumbing (`app.js` DOM/input, `gpu.js` WebGPU), `shaders.wgsl`.

@@ -145,9 +145,41 @@ pub const Canvas = struct {
         }
     }
 
+    /// Blend `rgb` over a rectangle with opacity `a` (premultiplied "over",
+    /// so it also works on the web build's transparent overlay).
+    pub fn tint(self: Canvas, x0: isize, y0: isize, w: isize, h: isize, rgb: [3]u8, a: f32) void {
+        const ys: usize = @intCast(std.math.clamp(y0, 0, @as(isize, @intCast(self.height))));
+        const ye: usize = @intCast(std.math.clamp(y0 + h, 0, @as(isize, @intCast(self.height))));
+        const xs: usize = @intCast(std.math.clamp(x0, 0, @as(isize, @intCast(self.width))));
+        const xe: usize = @intCast(std.math.clamp(x0 + w, 0, @as(isize, @intCast(self.width))));
+        const k = 1 - a;
+        for (ys..ye) |y| for (xs..xe) |x| {
+            const i = (y * self.width + x) * 4;
+            for (0..3) |c| {
+                self.pixels[i + c] = @intFromFloat(@as(f32, @floatFromInt(rgb[c])) * a + @as(f32, @floatFromInt(self.pixels[i + c])) * k);
+            }
+            self.pixels[i + 3] = @intFromFloat(255 * a + @as(f32, @floatFromInt(self.pixels[i + 3])) * k);
+        };
+    }
+
+    /// One-pixel rectangle outline.
+    pub fn rect(self: Canvas, x0: isize, y0: isize, w: isize, h: isize, rgb: [3]u8) void {
+        var i: isize = 0;
+        while (i < w) : (i += 1) {
+            self.put(x0 + i, y0, rgb);
+            self.put(x0 + i, y0 + h - 1, rgb);
+        }
+        i = 0;
+        while (i < h) : (i += 1) {
+            self.put(x0, y0 + i, rgb);
+            self.put(x0 + w - 1, y0 + i, rgb);
+        }
+    }
+
     pub fn ring(self: Canvas, cx: isize, cy: isize, r: f32, rgb: [3]u8) void {
         var a: f32 = 0;
-        while (a < 6.2832) : (a += 0.05) {
+        const da = @min(0.05, 0.8 / @max(r, 1)); // no gaps on big rings
+        while (a < 6.2832) : (a += da) {
             self.put(cx + @as(isize, @intFromFloat(@cos(a) * r)), cy + @as(isize, @intFromFloat(@sin(a) * r)), rgb);
         }
     }
