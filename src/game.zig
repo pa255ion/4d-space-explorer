@@ -82,6 +82,8 @@ pub const Game = struct {
     touch: touch_mod.Touch = .{},
     /// Gamepad mapping state.
     pad: pad_mod.Pad = .{},
+    /// VR: the eye currently being rendered replaces the observer camera.
+    eye: ?Eye = null,
 
     pub fn init(s: Settings) Game {
         var g = Game{ .ship = undefined, .sys = system.System.init(s.motion), .s = s };
@@ -280,6 +282,16 @@ pub const Game = struct {
 
 pub const scancode_escape = 41;
 
+/// A camera given as rays (VR eyes, possibly asymmetric frusta): the ray
+/// through screen point (sx, sy) is fwd + right*sx + up*sy, with sx in
+/// [-aspect, aspect] and sy in [-1, 1], as the composite kernel computes it.
+pub const Eye = struct {
+    pos: [3]f32,
+    fwd: [3]f32,
+    right: [3]f32,
+    up: [3]f32,
+};
+
 fn spawn(sys: *const system.System, planet: usize, alt: f64) physics.Ship {
     const pl = &world.planets[planet];
     const c = sys.pos[planet];
@@ -314,6 +326,7 @@ pub fn buildParams(g: *const Game, width: u32, height: u32) world.Params {
     const s = &g.s;
     const axes = g.viewAxes();
     const b = g.obs.basis();
+    const eye: Eye = g.eye orelse .{ .pos = g.obs.pos, .fwd = b.fwd, .right = b.right, .up = b.up };
     var p = world.Params{
         .right = toF32x4(axes[0]),
         .up = toF32x4(axes[1]),
@@ -328,11 +341,11 @@ pub fn buildParams(g: *const Game, width: u32, height: u32) world.Params {
         .num_bodies = world.planets.len,
         .width = @intCast(width),
         .height = @intCast(height),
-        .obs_pos = g.obs.pos,
-        .obs_fwd = b.fwd,
-        .obs_right = b.right,
-        .obs_up = b.up,
-        .obs_fov = obs_fov,
+        .obs_pos = eye.pos,
+        .obs_fwd = eye.fwd,
+        .obs_right = eye.right,
+        .obs_up = eye.up,
+        .obs_fov = if (g.eye != null) 1 else obs_fov,
         .room = @intFromBool(s.room),
         .base_alpha = s.base_alpha,
         .edge_gain = s.edge_gain,

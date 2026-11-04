@@ -35,7 +35,9 @@ async function main() {
   if (!navigator.gpu) {
     return fail('This page needs WebGPU: a recent Chrome, Edge or Safari, or Firefox on Windows.');
   }
-  const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' }) ??
+  // xrCompatible: the adapter must be usable for a WebXR session (VR).
+  // Browsers without WebXR ignore the option.
+  const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance', xrCompatible: true }) ??
     await navigator.gpu.requestAdapter();
   if (!adapter) {
     const ua = navigator.userAgent;
@@ -207,6 +209,7 @@ async function main() {
   // skipped vsyncs, and how long the GPU took to finish the last frame.
   const stats = (window.space4d = { adapter: adapterName, software: fallback, frames: 0, skipped: 0, gpuMs: 0 });
   const tick = (now) => {
+    if (vrActive) return; // the XR session drives frames; resume() restarts this loop
     if (inFlight >= MAX_IN_FLIGHT) {
       stats.skipped++;
       return;
@@ -228,12 +231,141 @@ async function main() {
   const guarded = (now) => {
     try {
       tick(now);
-      requestAnimationFrame(guarded);
+      if (!vrActive) requestAnimationFrame(guarded);
     } catch (err) {
       fail('Stopped: ' + err.message);
     }
   };
   requestAnimationFrame(guarded);
+  setupVR({ device, z, renderer, resume: () => { last = performance.now(); requestAnimationFrame(guarded); }, setPaused: (p) => { vrActive = p; } });
+}
+
+// ---------------------------------------------------------------------------
+// VR (WebXR with WebGPU). The page shows what it found, so it's clear why
+// the button is or isn't there.
+// ---------------------------------------------------------------------------
+
+let vrActive = false;
+
+async function setupVR({ device, z, renderer, resume, setPaused }) {
+  const button = document.getElementById('vr');
+  const status = document.getElementById('vr-status');
+  const say = (msg, ok = false) => { status.textContent = 'VR: ' + msg; status.className = ok ? 'ok' : ''; };
+  if (!navigator.xr) return say('this browser has no WebXR.');
+  let supported = false;
+  try { supported = await navigator.xr.isSessionSupported('immersive-vr'); } catch { /* treated as unsupported */ }
+  if (!supported) return say('no VR headset or runtime available here.');
+  if (typeof XRGPUBinding === 'undefined') {
+    return say('a headset is available, but this browser has no WebGPU support for WebXR. On Meta Quest: ' +
+      'Quest Browser 146+, enable "WebXR experimental features" in chrome://flags, then restart the browser.');
+  }
+  say('ready (experimental). Controllers: sticks fly, triggers up/down, grips ana/kata.', true);
+  button.classList.remove('hidden');
+  button.addEventListener('click', async () => {
+    try {
+      await enterVR({ device, z, renderer, resume, setPaused, say });
+    } catch (err) {
+      say('could not start: ' + err.message);
+      setPaused(false);
+    }
+  });
+}
+
+async function enterVR({ device, z, renderer, resume, setPaused, say }) {
+  const session = await navigator.xr.requestSession('immersive-vr', {
+    requiredFeatures: ['webgpu'],
+    optionalFeatures: ['local-floor'],
+  });
+  const binding = new XRGPUBinding(session, device);
+  const colorFormat = binding.getPreferredColorFormat();
+  const layer = binding.createProjectionLayer({ colorFormat });
+  session.updateRenderState({ layers: [layer] });
+  let space, floorY = 0;
+  try {
+    space = await session.requestReferenceSpace('local-floor');
+  } catch {
+    space = await session.requestReferenceSpace('local');
+    floorY = -1.6; // 'local' has its origin at eye height
+  }
+  const vr = await renderer.createVR(colorFormat);
+  setPaused(true);
+  z.vrEnter(floorY);
+  say(`in VR (layer format ${colorFormat}).`, true);
+  session.addEventListener('end', () => {
+    z.vrExit();
+    z.setPadConnected(false);
+    setPaused(false);
+    say('ready (experimental). Session ended.', true);
+    resume();
+  });
+
+  let last = null;
+  const onFrame = (t, frame) => {
+    session.requestAnimationFrame(onFrame);
+    const pose = frame.getViewerPose(space);
+    if (!pose) return;
+    xrControllers(session, z);
+    const views = pose.views.slice(0, 2);
+    const buf = new Float32Array(z.memory.buffer, z.vrViewsPtr(), 24);
+    const subs = views.map((view, i) => {
+      writeView(buf, i * 12, view);
+      return binding.getViewSubImage(layer, view);
+    });
+    const vp = subs[0].viewport;
+    z.vrFrame(last === null ? 0 : (t - last) / 1000, views.length, vp.width, vp.height);
+    last = t;
+    vr.frame(subs.map((sub, i) => ({
+      target: sub.colorTexture.createView(sub.getViewDescriptor()),
+      viewport: sub.viewport,
+      params: z.vrParamsPtr(i),
+    })), z.vrEyeWidth(), z.vrEyeHeight());
+  };
+  session.requestAnimationFrame(onFrame);
+}
+
+// One view's geometry for the game: eye position, the ray direction through
+// the top-left corner, and the direction steps across the full width and
+// height, all in the reference space. Only the x/y rows of the projection
+// matrix are needed: for view-space z = -1, x_ndc = P0 x + P8 (and
+// likewise y), which holds for any perspective matrix and depth convention.
+function writeView(buf, o, view) {
+  const P = view.projectionMatrix;
+  const m = view.transform.matrix; // column-major, view -> reference space
+  const dir = (nx, ny) => {
+    const x = (nx + P[8]) / P[0];
+    const y = (ny + P[9]) / P[5];
+    // rotate (x, y, -1) by the view's orientation
+    return [0, 1, 2].map((k) => m[k] * x + m[4 + k] * y - m[8 + k]);
+  };
+  const d00 = dir(-1, 1), d10 = dir(1, 1), d01 = dir(-1, -1);
+  const vals = [m[12], m[13], m[14], ...d00, ...d10.map((v, k) => v - d00[k]), ...d01.map((v, k) => v - d00[k])];
+  buf.set(vals, o);
+}
+
+// XR controllers ('xr-standard' gamepads) in the standard gamepad layout
+// that src/pad.zig maps: left stick/trigger/grip -> left stick, LT, LB;
+// right -> right stick, RT, RB; A boost, B view, X assist, Y view axes,
+// stick clicks L3 (4D mode) / R3 (next target).
+function xrControllers(session, z) {
+  const axes = [0, 0, 0, 0];
+  const btn = new Array(17).fill(0);
+  let any = false;
+  for (const src of session.inputSources) {
+    const gp = src.gamepad;
+    if (!gp) continue;
+    any = true;
+    const b = (i) => gp.buttons[i]?.value ?? 0;
+    const sx = gp.axes[2] ?? 0, sy = gp.axes[3] ?? 0;
+    if (src.handedness === 'left') {
+      axes[0] = sx; axes[1] = sy;
+      btn[6] = b(0); btn[4] = b(1); btn[10] = b(3); btn[2] = b(4); btn[3] = b(5);
+    } else if (src.handedness === 'right') {
+      axes[2] = sx; axes[3] = sy;
+      btn[7] = b(0); btn[5] = b(1); btn[11] = b(3); btn[0] = b(4); btn[1] = b(5);
+    }
+  }
+  z.setPadConnected(any);
+  if (any) new Float32Array(z.memory.buffer, z.padPtr(), 21).set([...axes, ...btn]);
 }
 
 main().catch((err) => fail(err.message));

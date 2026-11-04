@@ -22,6 +22,9 @@
   summary { cursor: pointer; color: #c9a85a; }
   details p, details li { margin: 6px 0; }
   code { color: #d8e2ec; overflow-wrap: anywhere; }
+  #vr-line { margin-top: 4px; }
+  #vr { font: inherit; color: #05070b; background: #6ec8ff; border: 0; padding: 4px 14px; cursor: pointer; }
+  #vr-status.ok { color: #78e68c; }
 </style>
 </head>
 <body>
@@ -31,6 +34,7 @@
   Click to fly · WASD/Space/Z move · R/F ana/kata · mouse turns · V/B views · C walk the room · ` options and all controls ·
   touch screens and gamepads work too ·
   <a href="https://github.com/pa255ion/4d-space-explorer">source</a>
+  <div id="vr-line"><button id="vr" class="hidden">ENTER VR</button> <span id="vr-status">VR: checking…</span></div>
 </footer>
 <details id="webgpu-note">
   <summary>Linux, the “Unsafe WebGPU” flag, and security</summary>

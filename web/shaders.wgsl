@@ -842,3 +842,30 @@ fn blit_fs(@builtin(position) pos: vec4f) -> @location(0) vec4f {
     let o = textureSampleLevel(overlay_tex, blit_lin, uv, 0.0);
     return vec4f(o.rgb + f.rgb * (1.0 - o.a), 1.0);
 }
+
+// ---------------------------------------------------------------------------
+// VR present: one eye's frame (rendered in the top-left `scale` part of its
+// texture) into that eye's view port of the XR projection layer.
+// ---------------------------------------------------------------------------
+
+struct VrBlit {
+    offset: vec2f, // view port origin in the layer texture, pixels
+    size: vec2f, // view port size, pixels
+    scale: vec2f, // rendered size / frame texture size
+    linear_out: f32, // 1: the layer is sRGB, so undo our display gamma
+}
+
+@group(0) @binding(14) var<uniform> vrb: VrBlit;
+
+@fragment
+fn vr_blit_fs(@builtin(position) pos: vec4f) -> @location(0) vec4f {
+    let uv = clamp((pos.xy - vrb.offset) / vrb.size, vec2f(0.0), vec2f(1.0));
+    let dims = vec2f(textureDimensions(frame_tex));
+    let half_texel = 0.5 / dims;
+    let fuv = clamp(uv * vrb.scale, half_texel, vrb.scale - half_texel);
+    var c = textureSampleLevel(frame_tex, blit_lin, fuv, 0.0).rgb;
+    if (vrb.linear_out > 0.5) {
+        c = pow(c, vec3f(2.2));
+    }
+    return vec4f(c, 1.0);
+}

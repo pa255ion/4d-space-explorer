@@ -208,8 +208,24 @@ the on-screen controls appear with the first touch.
   move through the list. The buttons on the right stand in for the arrow
   keys.
 - On the Quest only one laser acts at a time, so you can't hold the stick
-  and look at once. A VR mode with real controller input is planned
-  separately.
+  and look at once. Use VR (below) for real controller input.
+
+**VR** (web, experimental): under the view, a status line says whether VR
+is available and why not. When it is, ENTER VR puts you in the observatory
+around the cube at real scale, standing on its floor 2.6 m in front of it.
+Walk around it physically, and fly the ship with the controllers:
+
+- Left stick: thrust and strafe. Right stick: look.
+- Left / right trigger: down / up. Left / right grip: kata / ana.
+- A: boost. B: view. X: flight assist. Y: cycle view axes.
+- Left stick click: 4D mode (the right stick then turns toward ana).
+  Right stick click: next target.
+
+It needs WebXR with the WebGPU binding. On Meta Quest that means Quest
+Browser 146+ with "WebXR experimental features" enabled in `chrome://flags`.
+VR runs in low quality and adapts the per-eye resolution, then the retina
+(48–64³), to the headset's frame rate. There's no HUD or menu in VR yet.
+Leave VR to change settings.
 
 **Gamepads** (web through the Gamepad API, desktop through SDL; standard
 Xbox/PlayStation layout):

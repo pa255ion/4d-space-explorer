@@ -4,6 +4,7 @@ const hud = @import("hud.zig");
 const settings_mod = @import("settings.zig");
 const game = @import("game.zig");
 const Game = game.Game;
+const Analog = game.Analog;
 
 // ---------------------------------------------------------------------------
 // Browser frontend (wasm32-freestanding). web/app.js is the plumbing: it
@@ -265,6 +266,132 @@ fn updateScale(raw_dt: f64) void {
     render_w = @intFromFloat(@round(hud_w * scale));
     render_h = @intFromFloat(@round(hud_h * scale));
     g.res_pct = @intFromFloat(@round(scale * 100));
+}
+
+// ---------------------------------------------------------------------------
+// VR (WebXR + WebGPU). You stand in the observatory around the retina cube;
+// the controllers fly the ship through the gamepad mapping (app.js converts
+// the XR controllers to the standard layout). For each view JS writes 12
+// floats in XR local-floor space: eye position, the ray direction through
+// the view's top-left corner, and the direction steps across its full width
+// and height. The game turns each into an Eye and a parameter block.
+// ---------------------------------------------------------------------------
+
+const observer = @import("observer.zig");
+var vr_views: [2][12]f32 = undefined;
+var vr_params: [2]world.Params = undefined;
+var vr_eye_w: u32 = 0;
+var vr_eye_h: u32 = 0;
+var in_vr = false;
+var vr_floor_offset: f32 = 0; // XR y of the floor (non-zero if no local-floor space)
+var vr_saved_low = false;
+var vr_saved_view: settings_mod.View = .retina;
+
+/// Fraction of the headset's recommended per-eye resolution rendered.
+const vr_scales = [_]f32{ 0.25, 0.3, 0.375, 0.45, 0.55, 0.65, 0.75 };
+var vr_scale_level: usize = 2;
+var vr_avg_dt: f64 = 0;
+var vr_timer: f64 = 0;
+var vr_hold: f64 = 0;
+
+export fn vrViewsPtr() [*]f32 {
+    return @ptrCast(&vr_views);
+}
+
+/// `floor_y`: XR y of the floor (0 for a local-floor space; about -1.6 when
+/// only a 'local' space at eye height was available).
+export fn vrEnter(floor_y: f32) void {
+    in_vr = true;
+    vr_floor_offset = floor_y;
+    vr_saved_low = g.s.low_quality;
+    vr_saved_view = g.s.view;
+    // Headsets have phone-class GPUs and need two views at 72+ Hz.
+    g.s.low_quality = true;
+    auto_retina.level = 1; // 48^3
+    vr_scale_level = 2;
+    vr_avg_dt = 0;
+    log("space4d: entered VR", .{});
+}
+
+export fn vrExit() void {
+    in_vr = false;
+    g.eye = null;
+    g.s.low_quality = vr_saved_low;
+    g.s.view = vr_saved_view;
+    log("space4d: left VR", .{});
+}
+
+/// One XR frame: input, simulation, and a parameter block per view for a
+/// view port of `vp_w` x `vp_h` (the recommended per-eye size).
+export fn vrFrame(raw_dt: f64, n_views: u32, vp_w: u32, vp_h: u32) void {
+    const dt = std.math.clamp(raw_dt, 0, 0.1);
+    g.s.view = .retina; // the slice view has no place in the room
+    var an = Analog{};
+    if (pad_connected) {
+        const o = g.pad.update(&g, pad_state[0..pad.n_axes].*, pad_state[pad.n_axes..].*, @floatCast(dt));
+        // No menu in VR (it's a 2D overlay): ignore Start.
+        for (o.presses[0..o.n]) |sc| if (sc != @import("menu.zig").grave) {
+            _ = press(sc, false);
+        };
+        an = o.analog;
+    }
+    g.update(&keys, 0, 0, an, dt);
+    vrQuality(raw_dt);
+
+    const scale = vr_scales[vr_scale_level];
+    vr_eye_w = @max(64, @as(u32, @intFromFloat(@round(@as(f32, @floatFromInt(vp_w)) * scale))));
+    vr_eye_h = @max(64, @as(u32, @intFromFloat(@round(@as(f32, @floatFromInt(vp_h)) * scale))));
+    const aspect = @as(f32, @floatFromInt(vr_eye_w)) / @as(f32, @floatFromInt(vr_eye_h));
+    // XR origin (where you stood at session start, facing -z) maps to 2.6 m
+    // in front of the cube, standing on the observatory floor.
+    const rig = [3]f32{ 0, observer.room_floor - vr_floor_offset, 2.6 };
+    for (0..@min(n_views, 2)) |i| {
+        const v = vr_views[i];
+        const pos = [3]f32{ v[0] + rig[0], v[1] + rig[1], v[2] + rig[2] };
+        var e: game.Eye = .{ .pos = pos, .fwd = undefined, .right = undefined, .up = undefined };
+        for (0..3) |k| {
+            const d00 = v[3 + k];
+            const dx = v[6 + k];
+            const dy = v[9 + k];
+            e.fwd[k] = d00 + dx / 2 + dy / 2;
+            e.right[k] = dx / (2 * aspect);
+            e.up[k] = -dy / 2;
+        }
+        g.eye = e;
+        vr_params[i] = game.buildParams(&g, vr_eye_w, vr_eye_h);
+    }
+    g.eye = null;
+    g.n_eff = settings_mod.retina_sizes[auto_retina.level];
+    for (&vr_params) |*p| p.n = g.n_eff.?;
+}
+
+/// Lower the per-eye resolution first, then the retina, when the headset
+/// can't keep its frame rate; raise the retina (to 64^3) and then the
+/// resolution when there's headroom.
+fn vrQuality(raw_dt: f64) void {
+    if (raw_dt <= 0 or raw_dt > 0.25) return;
+    vr_avg_dt = if (vr_avg_dt == 0) raw_dt else vr_avg_dt * 0.9 + raw_dt * 0.1;
+    vr_timer += raw_dt;
+    vr_hold -= raw_dt;
+    if (vr_timer < 1.0) return;
+    vr_timer = 0;
+    const n64 = comptime std.mem.indexOfScalar(i32, &settings_mod.retina_sizes, 64).?;
+    if (vr_avg_dt > 1.0 / 55.0) {
+        vr_hold = 10;
+        if (vr_scale_level > 0) vr_scale_level -= 1 else if (auto_retina.level > 0) auto_retina.level -= 1;
+    } else if (vr_avg_dt < 1.0 / 66.0 and vr_hold <= 0) {
+        if (auto_retina.level < n64) auto_retina.level += 1 else if (vr_scale_level + 1 < vr_scales.len) vr_scale_level += 1;
+    }
+}
+
+export fn vrParamsPtr(i: u32) *const world.Params {
+    return &vr_params[@min(i, 1)];
+}
+export fn vrEyeWidth() u32 {
+    return vr_eye_w;
+}
+export fn vrEyeHeight() u32 {
+    return vr_eye_h;
 }
 
 export fn paramsPtr() *const world.Params {

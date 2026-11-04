@@ -99,6 +99,87 @@ export async function createRenderer(device, code, z, format) {
       rp.end();
       device.queue.submit([enc.finish()]);
     },
+
+    /**
+     * VR: a renderer for an XR projection layer of `colorFormat`. Its
+     * `frame(eyes)` takes [{ target: GPUTextureView, viewport: {x, y, width,
+     * height}, params: pointer to that eye's parameter block }] and an eye
+     * render size; the retina is traced once and composited per eye.
+     */
+    async createVR(colorFormat) {
+      const vrBlit = await device.createRenderPipelineAsync({
+        layout: 'auto',
+        vertex: { module, entryPoint: 'blit_vs' },
+        fragment: { module, entryPoint: 'vr_blit_fs', targets: [{ format: colorFormat }] },
+        primitive: { topology: 'triangle-list' },
+      });
+      const linearOut = colorFormat.endsWith('-srgb') ? 1 : 0;
+      const eyes = [0, 1].map((i) => ({
+        params: device.createBuffer({ label: `vr params ${i}`, size: z.paramsSize(), usage: U.STORAGE | U.COPY_DST }),
+        uniform: device.createBuffer({ label: `vr blit ${i}`, size: 32, usage: U.UNIFORM | U.COPY_DST }),
+        tex: null, texW: 0, texH: 0, composite: null, blitBind: null, boundN: 0,
+      }));
+      const prepare = (e, i, w, h) => {
+        if (!e.tex || w > e.texW || h > e.texH) {
+          e.tex?.destroy();
+          e.texW = Math.max(w, e.texW);
+          e.texH = Math.max(h, e.texH);
+          e.tex = device.createTexture({
+            label: `vr eye ${i}`, size: [e.texW, e.texH], format: 'rgba8unorm',
+            usage: T.STORAGE_BINDING | T.TEXTURE_BINDING,
+          });
+          e.boundN = 0;
+          e.blitBind = group(`vr blit ${i}`, vrBlit.getBindGroupLayout(0), [
+            [14, { buffer: e.uniform }], [11, e.tex.createView()], [13, lin],
+          ]);
+        }
+        if (e.boundN !== retinaN) { // the volume was reallocated
+          e.boundN = retinaN;
+          e.composite = kernel(compositeP, `vr composite ${i}`,
+            [[0, { buffer: e.params }], [3, vol.createView()], [4, lin], [5, e.tex.createView()]]);
+        }
+      };
+      return {
+        frame(views, w, h) {
+          const mem = z.memory.buffer;
+          const n = z.retinaN();
+          sizeRetina(n);
+          // The retina only depends on the ship: trace it with eye 0's block.
+          device.queue.writeBuffer(params, 0, mem, views[0].params, z.paramsSize());
+          views.forEach((v, i) => {
+            const e = eyes[i];
+            prepare(e, i, w, h);
+            device.queue.writeBuffer(e.params, 0, mem, v.params, z.paramsSize());
+            const vp = v.viewport;
+            device.queue.writeBuffer(e.uniform, 0, new Float32Array([
+              vp.x, vp.y, vp.width, vp.height, w / e.texW, h / e.texH, linearOut, 0]));
+          });
+          const enc = device.createCommandEncoder();
+          const pass = enc.beginComputePass();
+          const run = (k, x, y, zz) => {
+            pass.setPipeline(k.pipeline);
+            pass.setBindGroup(0, k.bind);
+            pass.dispatchWorkgroups(x, y, zz);
+          };
+          run(march, ceil(n, 8), ceil(n, 8), ceil(n, 4));
+          run(alpha, ceil(n, 8), ceil(n, 8), ceil(n, 4));
+          views.forEach((v, i) => run(eyes[i].composite, ceil(w, 16), ceil(h, 16), 1));
+          pass.end();
+          views.forEach((v, i) => {
+            // 'load': both eyes may share one texture (side by side), so a
+            // clear for the second eye would wipe the first.
+            const rp = enc.beginRenderPass({ colorAttachments: [{ view: v.target, loadOp: 'load', storeOp: 'store' }] });
+            const vp = v.viewport;
+            rp.setViewport(vp.x, vp.y, vp.width, vp.height, 0, 1);
+            rp.setPipeline(vrBlit);
+            rp.setBindGroup(0, eyes[i].blitBind);
+            rp.draw(3);
+            rp.end();
+          });
+          device.queue.submit([enc.finish()]);
+        },
+      };
+    },
   };
 }
 
