@@ -1,9 +1,11 @@
 // Browser plumbing: canvas, input events, pointer lock and saved settings.
 // Raw events go straight to the wasm game (src/web.zig), which owns key
 // bindings, the menu and everything else.
-import { createRenderer, loadWasm } from './gpu.js';
-
 const CONFIG_KEY = 'space4d.cfg';
+// Cache busting: tools/publish.sh loads this script as app.js?v=<commit>,
+// and every other file is fetched with the same suffix, so a visitor never
+// mixes files from two versions out of a cache.
+const VERSION = new URL(import.meta.url).search;
 
 // KeyboardEvent.code (physical key) -> SDL scancode, which is what the game's
 // bindings and menu use on every platform.
@@ -29,6 +31,7 @@ function fail(msg) {
 }
 
 async function main() {
+  const { createRenderer, loadWasm } = await import(`./gpu.js${VERSION}`);
   if (!navigator.gpu) {
     return fail('This page needs WebGPU: a recent Chrome, Edge or Safari, or Firefox on Windows.');
   }
@@ -62,8 +65,8 @@ async function main() {
 
   status.textContent = 'Loading…';
   const [bytes, code] = await Promise.all([
-    fetch('space4d.wasm').then((r) => r.arrayBuffer()),
-    fetch('shaders.wgsl').then((r) => r.text()),
+    fetch(`space4d.wasm${VERSION}`).then((r) => r.arrayBuffer()),
+    fetch(`shaders.wgsl${VERSION}`).then((r) => r.text()),
   ]);
   const game = await loadWasm(bytes, (m) => console.log(m), (m) => fail('Crashed: ' + m));
   const z = game.z;

@@ -27,8 +27,13 @@ zig build webcheck -- --check   # headless check (Deno WebGPU): WGSL vs Zig terr
 `shaders.wgsl`, `space4d.wasm`, about 200 KB in all) and needs no server-side
 support, so it can be uploaded to any static host. On Neocities, upload the
 folder's contents. `.wasm` isn't on the free tier's file-type list, but
-supporter accounts can upload it. Browsers may cache old files for a while
-after an update; a hard refresh picks up the new ones.
+supporter accounts can upload it.
+
+To publish into a site repository, run `nix develop -c tools/publish.sh
+../neocities-pa255ion`. It builds the web version, copies it into
+`4d-space-explorer/` in the site, and stamps the commit hash into the file
+URLs (`app.js?v=…`), so caches never serve a visitor a mix of old and new
+files. Commit and push the site afterwards.
 
 - **Same game, different frontend.** All logic (physics, menu, bindings, HUD)
   is the shared Zig code in `src/game.zig`, compiled to wasm by `src/web.zig`.
