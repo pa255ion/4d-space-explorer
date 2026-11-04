@@ -33,7 +33,10 @@ To publish into a site repository, run `nix develop -c tools/publish.sh
 ../neocities-pa255ion`. It builds the web version, copies it into
 `4d-space-explorer/` in the site, and stamps the commit hash into the file
 URLs (`app.js?v=…`), so caches never serve a visitor a mix of old and new
-files. Commit and push the site afterwards.
+files. Then commit and push the site and upload it with the site repo's
+`./deploy.sh` (`--dry-run` first to see the list). It uploads only files git
+tracks and never `.git/`; avoid `neocities push .`, which walks the whole
+directory, `.git/` included.
 
 - **Same game, different frontend.** All logic (physics, menu, bindings, HUD)
   is the shared Zig code in `src/game.zig`, compiled to wasm by `src/web.zig`.

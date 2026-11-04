@@ -2,7 +2,8 @@
 # Build the browser version and copy it into a static site checkout:
 #   tools/publish.sh SITE_DIR [SUBDIR]     (SUBDIR defaults to 4d-space-explorer)
 # The commit hash is stamped into the script URL so caches never mix
-# versions (see VERSION in web/app.js). Then commit and push the site.
+# versions (see VERSION in web/app.js). Then commit and push the site and
+# upload it with the site's ./deploy.sh.
 set -eu
 site=${1:?usage: tools/publish.sh SITE_DIR [SUBDIR]}
 sub=${2:-4d-space-explorer}
@@ -16,3 +17,4 @@ for f in index.html app.js gpu.js shaders.wgsl space4d.wasm; do
 done
 sed -i "s|src=\"app.js\"|src=\"app.js?v=$version\"|" "$dest/index.html"
 echo "published $version to $dest"
+echo "next: commit and push the site, then run its ./deploy.sh (never \`neocities push .\`: it uploads .git/)"
