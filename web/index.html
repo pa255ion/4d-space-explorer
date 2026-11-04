@@ -30,24 +30,31 @@
 <details id="webgpu-note">
   <summary>Linux, the “Unsafe WebGPU” flag, and security</summary>
   <p>On Windows, macOS and ChromeOS, current Chrome, Edge and Safari support WebGPU with no setup.
-  On Linux, Chromium-based browsers (Chrome, Brave, Edge) currently only offer it with two flags
-  turned on: <code>#enable-unsafe-webgpu</code> and <code>#enable-vulkan</code>.</p>
-  <p><strong>The “unsafe” flag is a real security trade-off.</strong> It turns on WebGPU where the
-  browser hasn't finished security-reviewing the GPU stack, bypasses the browser's list of GPU drivers
-  known to be unsafe, and exposes experimental GPU features. It applies to <em>every</em> website
-  you visit, not just this one. A malicious page could exploit bugs in the browser's WebGPU code or
-  in your GPU driver to crash the browser or graphics, and in the worst case read memory it shouldn't
-  or escape the browser's GPU sandbox.</p>
+  On Linux, Chromium-based browsers (Chrome, Brave, Edge) currently only use the GPU for WebGPU with
+  four flags (in <code>chrome://flags</code> or <code>brave://flags</code>):</p>
+  <ul>
+    <li><code>#enable-unsafe-webgpu</code>: Unsafe WebGPU Support → Enabled</li>
+    <li><code>#enable-vulkan</code>: Vulkan → Enabled</li>
+    <li><code>#use-angle</code>: Choose ANGLE graphics backend → Vulkan</li>
+    <li><code>#ignore-gpu-blocklist</code>: Override software rendering list → Enabled</li>
+  </ul>
+  <p>With only some of them, the browser may give no GPU or fall back to a software renderer.</p>
+  <p><strong>These flags are a real security trade-off.</strong> “Unsafe WebGPU” turns on WebGPU
+  where the browser hasn't finished security-reviewing the GPU stack and exposes experimental GPU
+  features; “Override software rendering list” makes the browser use GPU drivers it has blocked as
+  buggy or unsafe. Both apply to <em>every</em> website you visit, not just this one. A malicious
+  page could exploit bugs in the browser's WebGPU code or in your GPU driver to crash the browser or
+  graphics, and in the worst case read memory it shouldn't or escape the browser's GPU sandbox.</p>
   <ul>
     <li>Safest: use a separate browser instance only for this, started from a terminal with its own
       profile, and don't browse elsewhere with it, e.g.<br>
-      <code>brave-browser --user-data-dir="$HOME/.cache/webgpu-profile" --enable-unsafe-webgpu --enable-features=Vulkan</code><br>
-      (use your browser's own command: <code>google-chrome</code>, <code>chromium</code>, …).</li>
+      <code>brave-browser --user-data-dir="$HOME/.cache/webgpu-profile" --enable-unsafe-webgpu --enable-features=Vulkan --use-angle=vulkan --ignore-gpu-blocklist</code><br>
+      (use your browser's own command: <code>google-chrome</code>, <code>chromium</code>, <code>brave-origin</code>, …).</li>
     <li>Otherwise, turn the flags off again in <code>brave://flags</code> / <code>chrome://flags</code> when you're done.</li>
     <li>Keep the browser and your GPU drivers up to date either way.</li>
   </ul>
   <p>If the game says <strong>SOFTWARE RENDERER</strong>, WebGPU is running on your CPU, not your GPU
-  (very slow). That usually means the Vulkan flag is off or the browser can't reach your GPU driver:
+  (very slow). That usually means one of the four flags is missing or the browser can't reach your GPU driver:
   check that <code>brave://gpu</code> / <code>chrome://gpu</code> says “WebGPU: Hardware accelerated”.</p>
 </details>
 <script type="module" src="app.js"></script>

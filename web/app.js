@@ -44,8 +44,8 @@ async function main() {
     } else if (/Chrome\//.test(ua) && linux) {
       // Brave reports a Chrome user agent; navigator.brave tells them apart.
       const s = navigator.brave ? 'brave' : 'chrome';
-      hint = `On Linux this needs ${s}://flags/#enable-unsafe-webgpu and #enable-vulkan ` +
-        `(then restart, and check ${s}://gpu for "WebGPU: Hardware accelerated"). ` +
+      hint = `On Linux this needs four flags in ${s}://flags (listed below), then a restart; ` +
+        `${s}://gpu should then say "WebGPU: Hardware accelerated". ` +
         'Read the security note below before enabling them.' +
         (navigator.brave ? ' If it still fails, try with Shields down for this site.' : '');
       document.getElementById('webgpu-note').open = true;

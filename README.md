@@ -36,14 +36,18 @@ after an update; a hard refresh picks up the new ones.
   `web/shaders.wgsl` is a port of `src/kernels.hip`; keep the two in sync.
 - **Needs WebGPU**: current Chrome or Edge, Safari 26+, or Firefox on Windows.
   Other browsers get a message instead of the game. On Linux, Chromium-based
-  browsers (Chrome, Brave, Edge) need `#enable-unsafe-webgpu` and
-  `#enable-vulkan` in `chrome://flags` / `brave://flags`.
-  - **Security:** the unsafe flag enables WebGPU for every site, on a GPU
-    stack the browser hasn't finished reviewing, and bypasses the GPU driver
-    blocklist. A malicious page could exploit WebGPU or driver bugs. Prefer a
-    separate browser instance with its own profile for this (e.g.
-    `brave-browser --user-data-dir=... --enable-unsafe-webgpu --enable-features=Vulkan`),
-    or turn the flags off afterwards. The page explains this too.
+  browsers (Chrome, Brave, Edge) need four flags in `chrome://flags` /
+  `brave://flags`: `#enable-unsafe-webgpu`, `#enable-vulkan`, `#use-angle` =
+  Vulkan and `#ignore-gpu-blocklist`. With fewer, Brave Origin 1.98 and
+  Chromium 156 give no adapter or the software renderer.
+  - **Security:** "Unsafe WebGPU" enables WebGPU for every site, on a GPU
+    stack the browser hasn't finished reviewing; "Override software rendering
+    list" uses drivers the browser has blocked. A malicious page could
+    exploit WebGPU or driver bugs. Prefer a separate browser instance with its
+    own profile for this (e.g. `brave-browser --user-data-dir=...
+    --enable-unsafe-webgpu --enable-features=Vulkan --use-angle=vulkan
+    --ignore-gpu-blocklist`), or turn the flags off afterwards. The page
+    explains this too.
   - **Software rendering:** without GPU access, the unsafe flag can give
     Chromium's CPU renderer (SwiftShader). The game detects that, warns on
     the HUD and starts at the lowest settings, but it will still be slow.
