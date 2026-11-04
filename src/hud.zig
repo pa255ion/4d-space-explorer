@@ -104,9 +104,12 @@ pub const Canvas = struct {
         self.pixels[i] = rgb[0];
         self.pixels[i + 1] = rgb[1];
         self.pixels[i + 2] = rgb[2];
+        self.pixels[i + 3] = 255;
     }
 
-    /// Darken a rectangle (backdrop behind text).
+    /// Darken a rectangle (backdrop behind text) to a third. Alpha follows
+    /// premultiplied "over" rules, so on a transparent overlay (the web
+    /// build) the result darkens whatever is drawn underneath the same way.
     pub fn shade(self: Canvas, x0: usize, y0: usize, w: usize, h: usize) void {
         var y = y0;
         while (y < @min(y0 + h, self.height)) : (y += 1) {
@@ -114,6 +117,7 @@ pub const Canvas = struct {
             while (x < @min(x0 + w, self.width)) : (x += 1) {
                 const i = (y * self.width + x) * 4;
                 for (0..3) |c| self.pixels[i + c] = self.pixels[i + c] / 3;
+                self.pixels[i + 3] = 255 - (255 - self.pixels[i + 3]) / 3;
             }
         }
     }

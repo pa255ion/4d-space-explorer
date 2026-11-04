@@ -59,6 +59,38 @@ pub fn build(b: *std.Build) void {
     check.addArg("--gpucheck");
     b.step("gpucheck", "Compare CPU and GPU terrain functions").dependOn(&check.step);
 
+    // Browser build: zig-out/web/ is a static site (upload the folder as is).
+    // The game logic compiles to wasm; web/app.js drives WebGPU with
+    // web/shaders.wgsl, a port of src/kernels.hip.
+    const wasm = b.addExecutable(.{
+        .name = "space4d",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/web.zig"),
+            .target = b.resolveTargetQuery(.{ .cpu_arch = .wasm32, .os_tag = .freestanding }),
+            .optimize = optimize,
+            .strip = optimize != .Debug,
+        }),
+    });
+    wasm.entry = .disabled;
+    wasm.rdynamic = true;
+    const web_step = b.step("web", "Build the browser version into zig-out/web");
+    web_step.dependOn(&b.addInstallArtifact(wasm, .{ .dest_dir = .{ .override = .{ .custom = "web" } } }).step);
+    for ([_][]const u8{ "index.html", "app.js", "gpu.js", "shaders.wgsl" }) |f| {
+        web_step.dependOn(&b.addInstallFileWithDir(b.path(b.fmt("web/{s}", .{f})), .{ .custom = "web" }, f).step);
+    }
+
+    // Headless WebGPU test of the web build (Deno): `zig build webcheck -- --check`.
+    const webcheck = b.addSystemCommand(&.{ "deno", "run", "--allow-read", "--allow-write", "tools/webcheck.js" });
+    webcheck.step.dependOn(web_step);
+    if (b.args) |args| webcheck.addArgs(args);
+    b.step("webcheck", "Test the web build headlessly with Deno's WebGPU").dependOn(&webcheck.step);
+
+    // Serve zig-out/web on http://localhost:8000 for testing in a browser.
+    const serve = b.addSystemCommand(&.{ "python3", "-m", "http.server", "8000", "--bind", "127.0.0.1", "--directory" });
+    serve.addArg(b.getInstallPath(.{ .custom = "web" }, ""));
+    serve.step.dependOn(web_step);
+    b.step("serve", "Build the web version and serve it on localhost:8000").dependOn(&serve.step);
+
     // Pure-CPU unit tests: 4D math, noise, physics.
     const tests = b.addTest(.{
         .root_module = b.createModule(.{

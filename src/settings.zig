@@ -1,7 +1,13 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const system = @import("system.zig");
-const render = @import("render.zig");
 const m4 = @import("math4.zig");
+
+/// The browser build (web.zig): smaller defaults, no Ctrl in the default
+/// bindings (Ctrl+W closes the tab), a render-scale option.
+pub const is_web = builtin.cpu.arch.isWasm();
+
+pub const View = enum { retina, slice };
 
 // ---------------------------------------------------------------------------
 // User settings, key bindings, and their persistence in
@@ -93,7 +99,7 @@ pub const default_bindings = blk: {
     const pairs = .{
         .{ Action.fwd, L.k('W') },         .{ Action.back, L.k('S') },
         .{ Action.left, L.k('A') },        .{ Action.right, L.k('D') },
-        .{ Action.up, 44 },                .{ Action.down, 224 },
+        .{ Action.up, 44 },                .{ Action.down, if (is_web) L.k('Z') else 224 },
         .{ Action.ana, L.k('R') },         .{ Action.kata, L.k('F') },
         .{ Action.boost, 225 },            .{ Action.roll_left, L.k('Q') },
         .{ Action.roll_right, L.k('E') },  .{ Action.yaw_left, 80 },
@@ -125,6 +131,11 @@ pub const axis_presets = [_]struct { name: []const u8, map: [4]u2 }{
 
 pub const warps = [_]u8{ 1, 2, 4, 8, 16 };
 pub const retina_sizes = [_]i32{ 48, 64, 80, 96, 128, 160 };
+pub const max_retina: i32 = if (is_web) 96 else 160;
+/// Web only: fraction of the 1280x720 frame actually rendered. Index 0 is
+/// auto, which in slice view picks the scale and in cube view the retina
+/// resolution (up to `n`), whichever dominates the cost there.
+pub const render_scales = [_]f32{ 0, 0.5, 0.625, 0.75, 0.875, 1.0 };
 
 pub const Settings = struct {
     // Simulation
@@ -133,7 +144,7 @@ pub const Settings = struct {
     crash_speed: f32 = 12,
     pause_in_menu: bool = true,
     // View
-    view: render.View = .retina,
+    view: View = .retina,
     axes: u8 = 0,
     fov_deg: f32 = 74,
     n: i32 = 96,
@@ -143,6 +154,7 @@ pub const Settings = struct {
     shadows: bool = true,
     room: bool = true,
     labels: bool = true,
+    render_scale: u8 = 0, // index into `render_scales` (web only)
     // Input
     mouse_sens: f32 = 1.0,
     invert_y: bool = false,
@@ -170,7 +182,7 @@ pub const Settings = struct {
             idx = i;
         };
         if (dir < 0 and idx > 0) idx -= 1;
-        if (dir > 0 and idx + 1 < retina_sizes.len) idx += 1;
+        if (dir > 0 and idx + 1 < retina_sizes.len and retina_sizes[idx + 1] <= max_retina) idx += 1;
         self.n = retina_sizes[idx];
     }
 };
@@ -200,27 +212,46 @@ const saved_fields = blk: {
     break :blk names;
 };
 
+/// The settings as "name value" lines (what `save` writes and `apply` reads).
+pub fn serialize(s: *const Settings, out: []u8) []const u8 {
+    var len: usize = 0;
+    inline for (saved_fields) |name| {
+        const v = @field(s, name);
+        const res = switch (@typeInfo(@TypeOf(v))) {
+            .bool => std.fmt.bufPrint(out[len..], "{s} {d}\n", .{ name, @intFromBool(v) }),
+            .int, .float => std.fmt.bufPrint(out[len..], "{s} {d}\n", .{ name, v }),
+            .@"enum" => std.fmt.bufPrint(out[len..], "{s} {s}\n", .{ name, @tagName(v) }),
+            else => @compileError("unsupported setting type"),
+        };
+        if (res) |text| len += text.len else |_| {}
+    }
+    for (s.bindings, 0..) |b, i| {
+        const a: Action = @enumFromInt(i);
+        const text = std.fmt.bufPrint(out[len..], "bind.{s} {d}\n", .{ @tagName(a), b }) catch continue;
+        len += text.len;
+    }
+    return out[0..len];
+}
+
+/// Apply every line of a serialized config.
+pub fn applyAll(s: *Settings, text: []const u8) void {
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    while (lines.next()) |l| apply(s, std.mem.trim(u8, l, " \r\t"));
+    s.n = std.math.clamp(s.n, 16, max_retina);
+    s.axes %= axis_presets.len;
+    s.warp = @min(s.warp, warps.len - 1);
+    s.render_scale = @min(s.render_scale, render_scales.len - 1);
+}
+
 pub fn save(s: *const Settings) void {
     var pbuf: [512]u8 = undefined;
     const path = configPath(&pbuf) orelse return;
     const f = fopen(path, "w") orelse return;
     defer _ = fclose(f);
-    var line: [128]u8 = undefined;
-    inline for (saved_fields) |name| {
-        const v = @field(s, name);
-        const res = switch (@typeInfo(@TypeOf(v))) {
-            .bool => std.fmt.bufPrintZ(&line, "{s} {d}\n", .{ name, @intFromBool(v) }),
-            .int, .float => std.fmt.bufPrintZ(&line, "{s} {d}\n", .{ name, v }),
-            .@"enum" => std.fmt.bufPrintZ(&line, "{s} {s}\n", .{ name, @tagName(v) }),
-            else => @compileError("unsupported setting type"),
-        };
-        if (res) |text| _ = fputs(text, f) else |_| {}
-    }
-    for (s.bindings, 0..) |b, i| {
-        const a: Action = @enumFromInt(i);
-        const text = std.fmt.bufPrintZ(&line, "bind.{s} {d}\n", .{ @tagName(a), b }) catch continue;
-        _ = fputs(text, f);
-    }
+    var buf: [4096]u8 = undefined;
+    const text = serialize(s, buf[0 .. buf.len - 1]);
+    buf[text.len] = 0;
+    _ = fputs(buf[0..text.len :0], f);
 }
 
 pub fn load(s: *Settings) void {
@@ -232,6 +263,7 @@ pub fn load(s: *Settings) void {
     while (fgets(&buf, buf.len, f)) |l| {
         apply(s, std.mem.trim(u8, std.mem.span(l), " \r\n\t"));
     }
+    applyAll(s, "");
 }
 
 /// Apply one "name value" line; unknown or malformed lines are ignored, so
@@ -321,6 +353,21 @@ test "settings round-trip through config lines" {
     try std.testing.expectEqual(a.motion, b.motion);
     try std.testing.expectEqual(a.fov_deg, b.fov_deg);
     try std.testing.expectEqual(a.invert_y, b.invert_y);
+    try std.testing.expectEqualSlices(u16, &a.bindings, &b.bindings);
+}
+
+test "serialize then applyAll restores the settings" {
+    var a = Settings{};
+    a.motion = .static;
+    a.slab = 0.35;
+    a.labels = false;
+    a.bindings[@intFromEnum(Action.view)] = 60;
+    var buf: [4096]u8 = undefined;
+    var b = Settings{};
+    applyAll(&b, serialize(&a, &buf));
+    try std.testing.expectEqual(a.motion, b.motion);
+    try std.testing.expectEqual(a.slab, b.slab);
+    try std.testing.expectEqual(a.labels, b.labels);
     try std.testing.expectEqualSlices(u16, &a.bindings, &b.bindings);
 }
 

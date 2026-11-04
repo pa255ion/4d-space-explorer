@@ -9,9 +9,9 @@ const world = @import("world.zig");
 // then copies the RGBA frame back to the host.
 // ---------------------------------------------------------------------------
 
-pub const max_retina = 160;
+pub const max_retina = @import("settings.zig").max_retina;
 
-pub const View = enum { retina, slice };
+pub const View = @import("settings.zig").View;
 
 pub const Renderer = struct {
     module: hip.hipModule_t = null,

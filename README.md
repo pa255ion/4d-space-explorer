@@ -13,6 +13,40 @@ zig build test                # CPU unit tests: 4D math, noise, physics
 zig build gpucheck            # CPU and GPU terrain functions agree
 ```
 
+## Browser version
+
+The same game runs in the browser via WebAssembly and WebGPU:
+
+```sh
+zig build web       # static site in zig-out/web/
+zig build serve     # ...and serve it on http://localhost:8000
+zig build webcheck -- --check   # headless check (Deno WebGPU): WGSL vs Zig terrain
+```
+
+`zig-out/web/` holds five files (`index.html`, `app.js`, `gpu.js`,
+`shaders.wgsl`, `space4d.wasm`, about 200 KB in all) and needs no server-side
+support, so it can be uploaded to any static host. On Neocities, upload the
+folder's contents. `.wasm` isn't on the free tier's file-type list, but
+supporter accounts can upload it. Browsers may cache old files for a while
+after an update; a hard refresh picks up the new ones.
+
+- **Same game, different frontend.** All logic (physics, menu, bindings, HUD)
+  is the shared Zig code in `src/game.zig`, compiled to wasm by `src/web.zig`.
+  `web/app.js` only forwards raw input and runs the GPU passes.
+  `web/shaders.wgsl` is a port of `src/kernels.hip`; keep the two in sync.
+- **Needs WebGPU**: current Chrome or Edge, Safari 26+, or Firefox on Windows.
+  Other browsers get a message instead of the game.
+- **Differences from native.**
+  - Thrust down defaults to **Z** rather than Ctrl, since Ctrl+W closes the tab.
+  - Esc only releases the mouse; click the view to capture it again.
+  - Settings are saved in the browser's local storage.
+  - The retina resolution goes up to 96³.
+- **RENDER RESOLUTION** (menu, web only) defaults to AUTO, which adapts to
+  the visitor's GPU. In slice view it lowers the pixel count, because that
+  view's cost grows with pixels. In cube view it lowers the retina
+  resolution instead (capped by RETINA RESOLUTION), because the N³ rays
+  dominate there and compositing is cheap. The HUD shows what is in use.
+
 ## How to read the retina cube
 
 An ordinary 3D camera loses one dimension. Rays fan out from the eye
@@ -106,7 +140,7 @@ Settings are saved to `~/.config/space4d.cfg`.
 | Key | Action |
 | --- | --- |
 | W / S, A / D | thrust forward / back, strafe |
-| Space / Ctrl | thrust up / down |
+| Space / Ctrl (web: Z) | thrust up / down |
 | R / F | thrust ana / kata (the 4th axis) |
 | Shift | boost ×8 |
 | Mouse or arrows | yaw, pitch |
@@ -143,6 +177,10 @@ view), `--eye X Y Z YAW PITCH` (standing in the room), `--no-room`, `--menu`.
 - `src/physics.zig`: gravity, thrusters, assist, collision (+ tests).
 - `src/math4.zig`: 4D vectors and rotation frames (+ tests).
 - `src/render.zig`: HIP module/buffers/launches.
-- `src/main.zig`: game loop, input, HUD and face labels, headless modes.
+- `src/game.zig`: platform-independent game: state, input handling, simulation step, GPU params, HUD.
+- `src/main.zig`: native frontend (SDL window, HIP renderer, headless screenshots).
+- `src/web.zig`: browser frontend (wasm exports, auto quality).
+- `web/`: page, JS plumbing (`app.js` DOM/input, `gpu.js` WebGPU), `shaders.wgsl`.
+- `tools/webcheck.js`: headless WebGPU test of the web build (Deno).
 - `src/hud.zig`: built-in 5×7 bitmap font.
 - `src/hip.zig`, `src/sdl.zig`: hand-written C API bindings.

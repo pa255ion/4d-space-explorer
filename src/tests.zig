@@ -5,4 +5,5 @@ test {
     _ = @import("physics.zig");
     _ = @import("settings.zig");
     _ = @import("observer.zig");
+    _ = @import("game.zig");
 }

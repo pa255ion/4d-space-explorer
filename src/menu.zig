@@ -28,6 +28,7 @@ const Opt = enum {
     shadows,
     room,
     labels,
+    render_scale,
     mouse_sens,
     invert_y,
     reset_controls,
@@ -59,11 +60,14 @@ const items = blk: {
         .{ .opt = .shadows },
         .{ .opt = .room },
         .{ .opt = .labels },
-        .{ .header = "INPUT" },
-        .{ .opt = .mouse_sens },
-        .{ .opt = .invert_y },
-        .{ .opt = .reset_controls },
-        .{ .header = "CONTROLS  (ENTER TO REBIND)" },
+    };
+    if (settings_mod.is_web) list = list ++ .{Item{ .opt = .render_scale }};
+    list = list ++ .{
+        Item{ .header = "INPUT" },
+        Item{ .opt = .mouse_sens },
+        Item{ .opt = .invert_y },
+        Item{ .opt = .reset_controls },
+        Item{ .header = "CONTROLS  (ENTER TO REBIND)" },
     };
     for (0..settings_mod.n_actions) |i| list = list ++ .{Item{ .bind = @enumFromInt(i) }};
     break :blk list;
@@ -194,6 +198,7 @@ fn optLabel(o: Opt) []const u8 {
         .shadows => "SHADOWS",
         .room => "OBSERVATORY ROOM",
         .labels => "CUBE FACE LABELS",
+        .render_scale => "RENDER RESOLUTION",
         .mouse_sens => "MOUSE SENSITIVITY",
         .invert_y => "INVERT MOUSE Y",
         .reset_controls => "RESTORE DEFAULT CONTROLS",
@@ -208,6 +213,7 @@ fn optHint(it: Item) ?[]const u8 {
             .axes => "WHICH 3 SHIP AXES THE VIEW SHOWS; THE 4TH BECOMES CUBE DEPTH",
             .slab => "HOW MUCH OF THE RETINA'S DEPTH IS SHOWN (0 = PURE CROSS-SECTION)",
             .reset_system => "PUTS PLANETS BACK ON THEIR START ORBITS; YOU MOVE WITH THE NEAREST",
+            .render_scale => "AUTO: SLICE VIEW DROPS PIXELS, CUBE VIEW DROPS RETINA RES (UP TO THE ONE ABOVE)",
             else => null,
         },
         .bind => "MOUSE YAWS/PITCHES TOO. KEYS ALSO WALK YOU IN ROOM MODE",
@@ -240,6 +246,7 @@ fn optValue(o: Opt, s: *const Settings, buf: []u8) []const u8 {
         .shadows => onOff(s.shadows),
         .room => onOff(s.room),
         .labels => onOff(s.labels),
+        .render_scale => if (s.render_scale == 0) "AUTO" else std.fmt.bufPrint(buf, "{d:.0}%", .{settings_mod.render_scales[s.render_scale] * 100}) catch "",
         .mouse_sens => std.fmt.bufPrint(buf, "{d:.1}X", .{s.mouse_sens}) catch "",
         .invert_y => onOff(s.invert_y),
     };
@@ -276,6 +283,7 @@ fn adjust(s: *Settings, it: Item, dir: i32) Command {
         .shadows => s.shadows = !s.shadows,
         .room => s.room = !s.room,
         .labels => s.labels = !s.labels,
+        .render_scale => s.render_scale = @intCast(@mod(@as(i32, s.render_scale) + dir, @as(i32, settings_mod.render_scales.len))),
         .mouse_sens => s.mouse_sens = std.math.clamp(s.mouse_sens + 0.1 * fd, 0.1, 5),
         .invert_y => s.invert_y = !s.invert_y,
         .reset_controls => s.bindings = settings_mod.default_bindings,
