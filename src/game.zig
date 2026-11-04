@@ -145,7 +145,7 @@ pub const Game = struct {
     /// mouse motion since the last frame, then run as many fixed physics
     /// steps as `frame_dt` (times the warp) covers.
     pub fn update(g: *Game, keys: []const u8, mouse_dx: f32, mouse_dy: f32, frame_dt: f64) void {
-        g.fps = if (g.fps == 0) 1 / frame_dt else g.fps * 0.92 + 0.08 / frame_dt;
+        if (frame_dt > 0) g.fps = if (g.fps == 0) 1 / frame_dt else g.fps * 0.92 + 0.08 / frame_dt;
         const s = &g.s;
         const held = struct {
             fn f(ks: []const u8, st: *const Settings, a: Action) f64 {

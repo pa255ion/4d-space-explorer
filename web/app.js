@@ -32,8 +32,24 @@ async function main() {
   if (!navigator.gpu) {
     return fail('This page needs WebGPU: a recent Chrome, Edge or Safari, or Firefox on Windows.');
   }
-  const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
-  if (!adapter) return fail('WebGPU is available but found no usable GPU.');
+  const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' }) ??
+    await navigator.gpu.requestAdapter();
+  if (!adapter) {
+    const ua = navigator.userAgent;
+    const linux = /Linux/.test(ua) && !/Android/.test(ua);
+    let hint = 'Make sure hardware acceleration is enabled in the browser settings.';
+    if (/Firefox\//.test(ua)) {
+      hint = linux ? 'Firefox on Linux: set dom.webgpu.enabled to true in about:config, or use Chrome.'
+        : 'Firefox: update to the latest version and check that hardware acceleration is on.';
+    } else if (/Chrome\//.test(ua) && linux) {
+      // Brave reports a Chrome user agent; navigator.brave tells them apart.
+      const s = navigator.brave ? 'brave' : 'chrome';
+      hint = `On Linux: enable ${s}://flags/#enable-unsafe-webgpu and #enable-vulkan, restart, ` +
+        `and check ${s}://gpu for "WebGPU: Hardware accelerated".` +
+        (navigator.brave ? ' If it still fails, try with Shields down for this site.' : '');
+    }
+    return fail('WebGPU is available but found no usable GPU. ' + hint);
+  }
   const device = await adapter.requestDevice();
   device.lost.then((info) => info.reason !== 'destroyed' && fail('GPU device lost: ' + info.message));
   device.addEventListener('uncapturederror', (e) => fail('GPU error: ' + e.error.message));
@@ -98,18 +114,39 @@ async function main() {
   window.addEventListener('pagehide', save);
   document.addEventListener('visibilitychange', () => document.hidden && save());
 
+  // At most two frames in flight. Some browsers (e.g. Chromium on Linux with
+  // Vulkan) don't hold back requestAnimationFrame while the GPU is busy, so
+  // without a limit frames queue up: the FPS counter reads high while what
+  // you see lags further and further behind the input, and auto quality,
+  // judging by those fast-looking frames, raises the cost even more. With
+  // the limit, frame times (and so the FPS and auto quality) are real, and
+  // the display is at most two frames behind.
+  const MAX_IN_FLIGHT = 2;
   let last = performance.now();
+  let inFlight = 0;
+  // Visible in the console as space4d: rendered frames and skipped vsyncs.
+  const stats = (window.space4d = { frames: 0, skipped: 0 });
   const tick = (now) => {
+    if (inFlight >= MAX_IN_FLIGHT) {
+      stats.skipped++;
+      return;
+    }
+    z.frame((now - last) / 1000);
+    last = now;
+    renderer.frame(ctx.getCurrentTexture().createView());
+    stats.frames++;
+    inFlight++;
+    device.queue.onSubmittedWorkDone().then(() => inFlight--);
+  };
+  const guarded = (now) => {
     try {
-      z.frame((now - last) / 1000);
-      last = now;
-      renderer.frame(ctx.getCurrentTexture().createView());
-      requestAnimationFrame(tick);
+      tick(now);
+      requestAnimationFrame(guarded);
     } catch (err) {
       fail('Stopped: ' + err.message);
     }
   };
-  requestAnimationFrame(tick);
+  requestAnimationFrame(guarded);
 }
 
 main().catch((err) => fail(err.message));
