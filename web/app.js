@@ -259,7 +259,7 @@ async function setupVR({ device, z, renderer, resume, setPaused }) {
     return say('a headset is available, but this browser has no WebGPU support for WebXR. On Meta Quest: ' +
       'Quest Browser 146+, enable "WebXR experimental features" in chrome://flags, then restart the browser.');
   }
-  say('ready (experimental). Controllers: sticks fly, triggers up/down, grips ana/kata, B cube/slice view.', true);
+  say('ready (experimental). Controllers: sticks fly, triggers up/down, grips ana/kata, B cube/slice view, Y HUD panel (point and pull the trigger).', true);
   button.classList.remove('hidden');
   button.addEventListener('click', async () => {
     try {
@@ -304,7 +304,7 @@ async function enterVR({ device, z, renderer, resume, setPaused, say }) {
     session.requestAnimationFrame(onFrame);
     const pose = frame.getViewerPose(space);
     if (!pose) return;
-    xrControllers(session, z);
+    xrControllers(session, z, frame, space);
     const views = pose.views.slice(0, 2);
     const buf = new Float32Array(z.memory.buffer, z.vrViewsPtr(), 24);
     const subs = views.map((view, i) => {
@@ -318,7 +318,8 @@ async function enterVR({ device, z, renderer, resume, setPaused, say }) {
       target: sub.colorTexture.createView(sub.getViewDescriptor()),
       viewport: sub.viewport,
       params: z.vrParamsPtr(i),
-    })), z.vrEyeWidth(), z.vrEyeHeight());
+      blit: z.vrBlitPtr(i),
+    })));
   };
   session.requestAnimationFrame(onFrame);
 }
@@ -344,9 +345,19 @@ function writeView(buf, o, view) {
 
 // XR controllers ('xr-standard' gamepads) in the standard gamepad layout
 // that src/pad.zig maps: left stick/trigger/grip -> left stick, LT, LB;
-// right -> right stick, RT, RB; A boost, B view, X assist, Y view axes,
-// stick clicks L3 (4D mode) / R3 (next target).
-function xrControllers(session, z) {
+// right -> right stick, RT, RB; A boost, B view, X assist, Y HUD panel,
+// stick clicks L3 (4D mode) / R3 (next target). Y is taken by the game for
+// the HUD panel, which the controllers' rays point at (written per hand:
+// valid, origin, direction).
+function xrControllers(session, z, frame, space) {
+  const rays = new Float32Array(z.memory.buffer, z.vrCtrlPtr(), 14);
+  rays.fill(0);
+  for (const src of session.inputSources) {
+    const h = src.handedness === 'left' ? 0 : src.handedness === 'right' ? 1 : -1;
+    if (h < 0 || !src.targetRaySpace) continue;
+    const m = frame.getPose?.(src.targetRaySpace, space)?.transform.matrix;
+    if (m) rays.set([1, m[12], m[13], m[14], -m[8], -m[9], -m[10]], h * 7);
+  }
   const axes = [0, 0, 0, 0];
   const btn = new Array(17).fill(0);
   let any = false;

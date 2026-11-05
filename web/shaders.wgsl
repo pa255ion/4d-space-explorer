@@ -844,27 +844,113 @@ fn blit_fs(@builtin(position) pos: vec4f) -> @location(0) vec4f {
 }
 
 // ---------------------------------------------------------------------------
-// VR present: one eye's frame (rendered in the top-left `scale` part of its
-// texture) into that eye's view port of the XR projection layer.
+// VR present, per eye, into its view port of the XR projection layer:
+//   - the cube view: that eye's own frame (rendered in the top-left `scale`
+//     part of its texture);
+//   - the slice view: the shared "cyclops" frame, reprojected along this
+//     eye's ray directions;
+// then the floating HUD panel, its cursor and the controller beams. Rays are
+// in XR space: fwd + right*sx + up*sy, sx in [-aspect, aspect], sy in [-1, 1].
+// Filled by src/web.zig (vrFrame) except the first two vec4s (app.js).
 // ---------------------------------------------------------------------------
 
 struct VrBlit {
-    offset: vec2f, // view port origin in the layer texture, pixels
-    size: vec2f, // view port size, pixels
-    scale: vec2f, // rendered size / frame texture size
-    linear_out: f32, // 1: the layer is sRGB, so undo our display gamma
+    port: vec4f, // view port origin and size in the layer texture, pixels
+    misc: vec4f, // rendered size / frame texture size (xy), linear_out, slice
+    eye_pos: vec4f, // w: aspect
+    eye_fwd: vec4f,
+    eye_right: vec4f,
+    eye_up: vec4f,
+    cyc_r: vec4f, // cyclops camera axes (orthonormal)
+    cyc_u: vec4f,
+    cyc_f: vec4f,
+    cyc_ext: vec4f, // its frustum on the plane at 1: x0, x1, y0, y1
+    panel_c: vec4f, // w: panel shown
+    panel_r: vec4f, // half width
+    panel_u: vec4f, // half height
+    cursor: vec4f, // panel uv, shown
+    beam0_o: vec4f,
+    beam0_d: vec4f, // w: length (0 = none)
+    beam1_o: vec4f,
+    beam1_d: vec4f,
 }
 
 @group(0) @binding(14) var<uniform> vrb: VrBlit;
 
+/// Distance between the view ray (o + d s, s > 0) and a beam segment.
+fn beam_dist(o: vec3f, d: vec3f, bo: vec3f, bd: vec3f, len: f32) -> f32 {
+    let w = o - bo;
+    let b = dot(d, bd);
+    let dd = dot(d, w);
+    let e = dot(bd, w);
+    let den = 1.0 - b * b;
+    if (den < 1e-6) {
+        return 1e9;
+    }
+    let s = (b * e - dd) / den;
+    let t = clamp((e - b * dd) / den, 0.0, len);
+    if (s <= 0.0) {
+        return 1e9;
+    }
+    return length(w + d * s - bd * t);
+}
+
 @fragment
 fn vr_blit_fs(@builtin(position) pos: vec4f) -> @location(0) vec4f {
-    let uv = clamp((pos.xy - vrb.offset) / vrb.size, vec2f(0.0), vec2f(1.0));
+    let uv = clamp((pos.xy - vrb.port.xy) / vrb.port.zw, vec2f(0.0), vec2f(1.0));
+    let aspect = vrb.eye_pos.w;
+    let d = normalize(vrb.eye_fwd.xyz + vrb.eye_right.xyz * ((uv.x * 2.0 - 1.0) * aspect) + vrb.eye_up.xyz * (1.0 - uv.y * 2.0));
+    let o = vrb.eye_pos.xyz;
+
+    var fuv = uv;
+    if (vrb.misc.w > 0.5) {
+        let z = max(dot(d, vrb.cyc_f.xyz), 1e-4);
+        let p = vec2f(dot(d, vrb.cyc_r.xyz), dot(d, vrb.cyc_u.xyz)) / z;
+        let e = vrb.cyc_ext;
+        fuv = clamp(vec2f((p.x - e.x) / (e.y - e.x), (e.w - p.y) / (e.w - e.z)), vec2f(0.0), vec2f(1.0));
+    }
     let dims = vec2f(textureDimensions(frame_tex));
     let half_texel = 0.5 / dims;
-    let fuv = clamp(uv * vrb.scale, half_texel, vrb.scale - half_texel);
-    var c = textureSampleLevel(frame_tex, blit_lin, fuv, 0.0).rgb;
-    if (vrb.linear_out > 0.5) {
+    let scale = vrb.misc.xy;
+    var c = textureSampleLevel(frame_tex, blit_lin, clamp(fuv * scale, half_texel, scale - half_texel), 0.0).rgb;
+
+    if (vrb.panel_c.w > 0.5) {
+        let r = vrb.panel_r.xyz;
+        let u = vrb.panel_u.xyz;
+        let n = cross(r, u);
+        let den = dot(d, n);
+        if (abs(den) > 1e-6) {
+            let t = dot(vrb.panel_c.xyz - o, n) / den;
+            let q = o + d * t - vrb.panel_c.xyz;
+            let a = dot(q, r) / dot(r, r);
+            let b = dot(q, u) / dot(u, u);
+            if (t > 0.0 && abs(a) <= 1.0 && abs(b) <= 1.0) {
+                let puv = vec2f(a * 0.5 + 0.5, 0.5 - b * 0.5);
+                let hud = vec2f(textureDimensions(overlay_tex));
+                let ov = textureSampleLevel(overlay_tex, blit_lin, puv, 0.0);
+                c = c * 0.35; // translucent dark backing
+                let edge = min(min(puv.x, 1.0 - puv.x) * hud.x, min(puv.y, 1.0 - puv.y) * hud.y);
+                if (edge < 3.0) {
+                    c = vec3f(0.43, 0.78, 1.0);
+                }
+                c = ov.rgb + c * (1.0 - ov.a);
+                if (vrb.cursor.z > 0.5) {
+                    let dc = length((puv - vrb.cursor.xy) * hud);
+                    if (dc < 9.0) {
+                        c = select(vec3f(1.0), vec3f(0.05), dc < 5.0);
+                    }
+                }
+            }
+        }
+        let k0 = beam_dist(o, d, vrb.beam0_o.xyz, vrb.beam0_d.xyz, vrb.beam0_d.w);
+        let k1 = beam_dist(o, d, vrb.beam1_o.xyz, vrb.beam1_d.xyz, vrb.beam1_d.w);
+        let k = min(select(1e9, k0, vrb.beam0_d.w > 0.0), select(1e9, k1, vrb.beam1_d.w > 0.0));
+        if (k < 0.0025) {
+            c = mix(c, vec3f(0.43, 0.78, 1.0), 0.8);
+        }
+    }
+
+    if (vrb.misc.z > 0.5) {
         c = pow(c, vec3f(2.2));
     }
     return vec4f(c, 1.0);

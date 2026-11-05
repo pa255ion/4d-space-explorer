@@ -102,9 +102,11 @@ export async function createRenderer(device, code, z, format) {
 
     /**
      * VR: a renderer for an XR projection layer of `colorFormat`. Its
-     * `frame(eyes)` takes [{ target: GPUTextureView, viewport: {x, y, width,
-     * height}, params: pointer to that eye's parameter block }] and an eye
-     * render size; the retina is traced once and composited per eye.
+     * `frame(views)` takes [{ target: GPUTextureView, viewport: {x, y, width,
+     * height}, params, blit }] (pointers to that eye's parameter and
+     * presentation blocks). The cube view traces the retina once and
+     * composites per eye; the slice view traces one shared "cyclops" frame
+     * that each eye reprojects (see vr_blit_fs).
      */
     async createVR(colorFormat) {
       const vrBlit = await device.createRenderPipelineAsync({
@@ -114,49 +116,64 @@ export async function createRenderer(device, code, z, format) {
         primitive: { topology: 'triangle-list' },
       });
       const linearOut = colorFormat.endsWith('-srgb') ? 1 : 0;
-      const eyes = [0, 1].map((i) => ({
-        params: device.createBuffer({ label: `vr params ${i}`, size: z.paramsSize(), usage: U.STORAGE | U.COPY_DST }),
-        uniform: device.createBuffer({ label: `vr blit ${i}`, size: 32, usage: U.UNIFORM | U.COPY_DST }),
-        tex: null, texW: 0, texH: 0, composite: null, slice: null, blitBind: null, boundN: 0,
-      }));
-      const prepare = (e, i, w, h) => {
-        if (!e.tex || w > e.texW || h > e.texH) {
-          e.tex?.destroy();
-          e.texW = Math.max(w, e.texW);
-          e.texH = Math.max(h, e.texH);
-          e.tex = device.createTexture({
-            label: `vr eye ${i}`, size: [e.texW, e.texH], format: 'rgba8unorm',
-            usage: T.STORAGE_BINDING | T.TEXTURE_BINDING,
-          });
-          e.boundN = 0;
-          e.slice = kernel(sliceP, `vr slice ${i}`, [[0, { buffer: e.params }], [5, e.tex.createView()]]);
-          e.blitBind = group(`vr blit ${i}`, vrBlit.getBindGroupLayout(0), [
-            [14, { buffer: e.uniform }], [11, e.tex.createView()], [13, lin],
-          ]);
-        }
-        if (retinaN && e.boundN !== retinaN) { // the volume was reallocated
-          e.boundN = retinaN;
-          e.composite = kernel(compositeP, `vr composite ${i}`,
-            [[0, { buffer: e.params }], [3, vol.createView()], [4, lin], [5, e.tex.createView()]]);
-        }
+      const target = (label, params) => ({ label, params, tex: null, w: 0, h: 0, composite: null, slice: null, boundN: 0 });
+      const grow = (t, w, h) => {
+        if (t.tex && w <= t.w && h <= t.h) return false;
+        t.tex?.destroy();
+        t.w = Math.max(w, t.w);
+        t.h = Math.max(h, t.h);
+        t.tex = device.createTexture({ label: t.label, size: [t.w, t.h], format: 'rgba8unorm', usage: T.STORAGE_BINDING | T.TEXTURE_BINDING });
+        t.boundN = 0;
+        t.slice = kernel(sliceP, `${t.label} slice`, [[0, { buffer: t.params }], [5, t.tex.createView()]]);
+        return true;
       };
+      const paramsBuf = (label) => device.createBuffer({ label, size: z.paramsSize(), usage: U.STORAGE | U.COPY_DST });
+      const cyc = target('vr cyclops', paramsBuf('vr params cyclops'));
+      const eyes = [0, 1].map((i) => ({
+        ...target(`vr eye ${i}`, paramsBuf(`vr params ${i}`)),
+        uniform: device.createBuffer({ label: `vr blit ${i}`, size: 72 * 4, usage: U.UNIFORM | U.COPY_DST }),
+        bindOwn: null, bindCyc: null, cycTex: null,
+      }));
+      const bindFor = (e, tex) => group(`${e.label} present`, vrBlit.getBindGroupLayout(0), [
+        [14, { buffer: e.uniform }], [11, tex.createView()], [12, overlay.createView()], [13, lin],
+      ]);
+      const block = new Float32Array(72);
       return {
-        frame(views, w, h) {
+        frame(views) {
           const mem = z.memory.buffer;
-          const cube = z.view() === 0;
+          const slice = z.view() !== 0;
+          const ew = z.vrEyeWidth(), eh = z.vrEyeHeight();
           const n = z.retinaN();
-          if (cube) {
+          if (z.vrPanelOpen()) {
+            device.queue.writeTexture(
+              { texture: overlay }, new Uint8Array(mem, z.overlayPtr(), W * H * 4),
+              { bytesPerRow: W * 4, rowsPerImage: H }, [W, H]);
+          }
+          let cw = 0, ch = 0;
+          if (slice) {
+            cw = z.vrCycWidth(); ch = z.vrCycHeight();
+            grow(cyc, cw, ch);
+            device.queue.writeBuffer(cyc.params, 0, mem, z.vrParamsPtr(2), z.paramsSize());
+          } else {
             sizeRetina(n);
             // The retina only depends on the ship: trace it with eye 0's block.
             device.queue.writeBuffer(params, 0, mem, views[0].params, z.paramsSize());
           }
           views.forEach((v, i) => {
             const e = eyes[i];
-            prepare(e, i, w, h);
-            device.queue.writeBuffer(e.params, 0, mem, v.params, z.paramsSize());
+            if (grow(e, ew, eh)) e.bindOwn = bindFor(e, e.tex);
+            if (e.cycTex !== cyc.tex && cyc.tex) { e.cycTex = cyc.tex; e.bindCyc = bindFor(e, cyc.tex); }
+            if (!slice && e.boundN !== retinaN) { // the volume was reallocated
+              e.boundN = retinaN;
+              e.composite = kernel(compositeP, `vr composite ${i}`,
+                [[0, { buffer: e.params }], [3, vol.createView()], [4, lin], [5, e.tex.createView()]]);
+            }
+            if (!slice) device.queue.writeBuffer(e.params, 0, mem, v.params, z.paramsSize());
+            block.set(new Float32Array(mem, v.blit, 72));
             const vp = v.viewport;
-            device.queue.writeBuffer(e.uniform, 0, new Float32Array([
-              vp.x, vp.y, vp.width, vp.height, w / e.texW, h / e.texH, linearOut, 0]));
+            block.set(slice ? [vp.x, vp.y, vp.width, vp.height, cw / cyc.w, ch / cyc.h, linearOut]
+              : [vp.x, vp.y, vp.width, vp.height, ew / e.w, eh / e.h, linearOut]);
+            device.queue.writeBuffer(e.uniform, 0, block);
           });
           const enc = device.createCommandEncoder();
           const pass = enc.beginComputePass();
@@ -165,13 +182,12 @@ export async function createRenderer(device, code, z, format) {
             pass.setBindGroup(0, k.bind);
             pass.dispatchWorkgroups(x, y, zz);
           };
-          if (cube) {
+          if (slice) {
+            run(cyc.slice, ceil(cw, 16), ceil(ch, 16), 1);
+          } else {
             run(march, ceil(n, 8), ceil(n, 8), ceil(n, 4));
             run(alpha, ceil(n, 8), ceil(n, 8), ceil(n, 4));
-            views.forEach((v, i) => run(eyes[i].composite, ceil(w, 16), ceil(h, 16), 1));
-          } else {
-            // Slice view: each eye ray-marches the 3D cross-section itself.
-            views.forEach((v, i) => run(eyes[i].slice, ceil(w, 16), ceil(h, 16), 1));
+            views.forEach((v, i) => run(eyes[i].composite, ceil(ew, 16), ceil(eh, 16), 1));
           }
           pass.end();
           views.forEach((v, i) => {
@@ -181,7 +197,7 @@ export async function createRenderer(device, code, z, format) {
             const vp = v.viewport;
             rp.setViewport(vp.x, vp.y, vp.width, vp.height, 0, 1);
             rp.setPipeline(vrBlit);
-            rp.setBindGroup(0, eyes[i].blitBind);
+            rp.setBindGroup(0, slice ? eyes[i].bindCyc : eyes[i].bindOwn);
             rp.draw(3);
             rp.end();
           });

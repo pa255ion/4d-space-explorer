@@ -99,9 +99,20 @@ pub const Result = struct {
     fullscreen: bool = false,
 };
 
+/// In VR (the floating panel) only buttons that make sense with
+/// controllers in hand: no stick, hold buttons, 4D, orbit or fullscreen.
+fn inVr(b: Button) bool {
+    return switch (b.kind) {
+        .tap, .menu => true,
+        else => false,
+    };
+}
+
 pub const Touch = struct {
     /// Set by the first touch; the controls are drawn from then on.
     enabled: bool = false,
+    /// VR panel mode (see `inVr`).
+    vr: bool = false,
     mode4d: bool = false,
     orbit: bool = false,
     slots: [10]Slot = [_]Slot{.{}} ** 10,
@@ -147,7 +158,7 @@ pub const Touch = struct {
             return .{};
         }
 
-        for (buttons, 0..) |b, i| if (hit(b, x, y)) {
+        for (buttons, 0..) |b, i| if ((!self.vr or inVr(b)) and hit(b, x, y)) {
             s.role = .{ .button = i };
             return switch (b.kind) {
                 .hold => .{},
@@ -164,7 +175,9 @@ pub const Touch = struct {
                 },
             };
         };
-        if (x < stick_zone_x and y > top_y + 60 and !self.stickActive()) {
+        if (self.vr) {
+            s.role = .none;
+        } else if (x < stick_zone_x and y > top_y + 60 and !self.stickActive()) {
             s.role = .stick;
             self.stick_base = .{ x, y };
             self.stick = .{ 0, 0 };
@@ -273,6 +286,7 @@ pub const Touch = struct {
             return;
         }
         for (buttons, 0..) |b, i| {
+            if (self.vr and !inVr(b)) continue;
             const on = switch (b.kind) {
                 .mode4d => self.mode4d,
                 .orbit => self.orbit,
@@ -280,6 +294,7 @@ pub const Touch = struct {
             };
             drawButton(c, b.x, b.y, b.w, b.h, b.label, on, dim, lit);
         }
+        if (self.vr) return;
         // Stick: base ring and knob.
         const bx: isize = @intFromFloat(self.stick_base[0]);
         const by: isize = @intFromFloat(self.stick_base[1]);
@@ -342,4 +357,17 @@ test "tap buttons press their bound key; menu rows select then change" {
     try std.testing.expectEqual(@as(usize, 2), g.menu.cursor);
     const again = t.down(&g, 3, 640, y_row2);
     try std.testing.expectEqual(@as(?u16, menu_mod.sc_keys.right), again.key);
+}
+
+test "VR panel: only tap buttons, no stick or fullscreen" {
+    var g = Game.init(.{});
+    var t = Touch{ .vr = true };
+    _ = t.down(&g, 1, 200, 520); // would grab the stick
+    try std.testing.expectEqual(@as(f64, 0), t.analog().thrust[2]);
+    t.up(1);
+    const full = t.down(&g, 2, 1280 - gap - 6 * (bw + gap) + gap + 10, top_y + 10); // FULL
+    try std.testing.expect(!full.fullscreen);
+    t.up(2);
+    const view = t.down(&g, 3, 1280 - gap - 2 * (bw + gap) + gap + 10, top_y + 10); // VIEW
+    try std.testing.expectEqual(@as(?u16, @intCast(g.s.key(.view))), view.key);
 }

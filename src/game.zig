@@ -402,7 +402,7 @@ pub fn drawHud(c: hud.Canvas, g: *Game) void {
     const alt = world.surfaceGap(rpl, g.sys.pos[ref], ship.pos) - physics.ship_radius;
 
     // Cube face labels: which ship direction each face of the retina is.
-    if (s.view == .retina and s.labels) {
+    if (s.view == .retina and s.labels and !g.touch.vr) { // (VR: the panel is not the room view)
         const map = settings_mod.axis_presets[s.axes].map;
         const W: f32 = @floatFromInt(c.width);
         const H: f32 = @floatFromInt(c.height);

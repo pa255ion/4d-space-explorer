@@ -217,18 +217,28 @@ Walk around it physically, and fly the ship with the controllers:
 
 - Left stick: thrust and strafe. Right stick: look.
 - Left / right trigger: down / up. Left / right grip: kata / ana.
-- A: boost. B: cube / slice view. X: flight assist. Y: cycle view axes.
+- A: boost. B: cube / slice view. X: flight assist. Y: HUD panel.
 - Left stick click: 4D mode (the right stick then turns toward ana).
   Right stick click: next target.
 
 In the slice view you are the ship, inside the 3D cross-section: the
-headset looks around the slice, and head motion moves the camera 1:1.
+headset looks around the slice, and head motion moves the camera 1:1. It is
+traced once for a camera between your eyes and reprojected for each eye
+(half the cost of two views; the slice is at planetary distances, so the
+lost stereo only shows right next to terrain).
+
+Y opens a floating panel in front of you with the HUD (speed, altitude,
+FPS, resolution), the buttons MENU, VIEW, AXES, ROOM, TGT and ASSIST, and
+the options menu when opened. Point at it with either controller and pull
+the trigger to click; a trigger aimed at the panel doesn't thrust. Y again
+closes it (and the menu).
 
 It needs WebXR with the WebGPU binding. On Meta Quest that means Quest
 Browser 146+ with "WebXR experimental features" enabled in `chrome://flags`.
-VR runs in low quality and adapts the per-eye resolution, then the retina
-(48–64³), to the headset's frame rate. There's no HUD or menu in VR yet.
-Leave VR to change settings.
+VR runs in low quality and adapts the per-eye resolution (down to 25% in
+the cube view, 15% in the slice view), then the retina (48–64³), to the
+headset's frame rate. Quality and view changes made in VR last until you
+leave it; other settings are saved as usual.
 
 **Gamepads** (web through the Gamepad API, desktop through SDL; standard
 Xbox/PlayStation layout):
