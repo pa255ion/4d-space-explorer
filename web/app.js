@@ -259,7 +259,7 @@ async function setupVR({ device, z, renderer, resume, setPaused }) {
     return say('a headset is available, but this browser has no WebGPU support for WebXR. On Meta Quest: ' +
       'Quest Browser 146+, enable "WebXR experimental features" in chrome://flags, then restart the browser.');
   }
-  say('ready (experimental). Controllers: sticks fly, triggers up/down, grips ana/kata.', true);
+  say('ready (experimental). Controllers: sticks fly, triggers up/down, grips ana/kata, B cube/slice view.', true);
   button.classList.remove('hidden');
   button.addEventListener('click', async () => {
     try {

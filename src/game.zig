@@ -10,7 +10,7 @@ const observer = @import("observer.zig");
 const touch_mod = @import("touch.zig");
 const pad_mod = @import("pad.zig");
 const Observer = observer.Observer;
-const V4 = m4.V4;
+pub const V4 = m4.V4;
 const Settings = settings_mod.Settings;
 const Action = settings_mod.Action;
 

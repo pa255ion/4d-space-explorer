@@ -117,7 +117,7 @@ export async function createRenderer(device, code, z, format) {
       const eyes = [0, 1].map((i) => ({
         params: device.createBuffer({ label: `vr params ${i}`, size: z.paramsSize(), usage: U.STORAGE | U.COPY_DST }),
         uniform: device.createBuffer({ label: `vr blit ${i}`, size: 32, usage: U.UNIFORM | U.COPY_DST }),
-        tex: null, texW: 0, texH: 0, composite: null, blitBind: null, boundN: 0,
+        tex: null, texW: 0, texH: 0, composite: null, slice: null, blitBind: null, boundN: 0,
       }));
       const prepare = (e, i, w, h) => {
         if (!e.tex || w > e.texW || h > e.texH) {
@@ -129,11 +129,12 @@ export async function createRenderer(device, code, z, format) {
             usage: T.STORAGE_BINDING | T.TEXTURE_BINDING,
           });
           e.boundN = 0;
+          e.slice = kernel(sliceP, `vr slice ${i}`, [[0, { buffer: e.params }], [5, e.tex.createView()]]);
           e.blitBind = group(`vr blit ${i}`, vrBlit.getBindGroupLayout(0), [
             [14, { buffer: e.uniform }], [11, e.tex.createView()], [13, lin],
           ]);
         }
-        if (e.boundN !== retinaN) { // the volume was reallocated
+        if (retinaN && e.boundN !== retinaN) { // the volume was reallocated
           e.boundN = retinaN;
           e.composite = kernel(compositeP, `vr composite ${i}`,
             [[0, { buffer: e.params }], [3, vol.createView()], [4, lin], [5, e.tex.createView()]]);
@@ -142,10 +143,13 @@ export async function createRenderer(device, code, z, format) {
       return {
         frame(views, w, h) {
           const mem = z.memory.buffer;
+          const cube = z.view() === 0;
           const n = z.retinaN();
-          sizeRetina(n);
-          // The retina only depends on the ship: trace it with eye 0's block.
-          device.queue.writeBuffer(params, 0, mem, views[0].params, z.paramsSize());
+          if (cube) {
+            sizeRetina(n);
+            // The retina only depends on the ship: trace it with eye 0's block.
+            device.queue.writeBuffer(params, 0, mem, views[0].params, z.paramsSize());
+          }
           views.forEach((v, i) => {
             const e = eyes[i];
             prepare(e, i, w, h);
@@ -161,9 +165,14 @@ export async function createRenderer(device, code, z, format) {
             pass.setBindGroup(0, k.bind);
             pass.dispatchWorkgroups(x, y, zz);
           };
-          run(march, ceil(n, 8), ceil(n, 8), ceil(n, 4));
-          run(alpha, ceil(n, 8), ceil(n, 8), ceil(n, 4));
-          views.forEach((v, i) => run(eyes[i].composite, ceil(w, 16), ceil(h, 16), 1));
+          if (cube) {
+            run(march, ceil(n, 8), ceil(n, 8), ceil(n, 4));
+            run(alpha, ceil(n, 8), ceil(n, 8), ceil(n, 4));
+            views.forEach((v, i) => run(eyes[i].composite, ceil(w, 16), ceil(h, 16), 1));
+          } else {
+            // Slice view: each eye ray-marches the 3D cross-section itself.
+            views.forEach((v, i) => run(eyes[i].slice, ceil(w, 16), ceil(h, 16), 1));
+          }
           pass.end();
           views.forEach((v, i) => {
             // 'load': both eyes may share one texture (side by side), so a

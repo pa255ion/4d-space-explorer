@@ -217,9 +217,12 @@ Walk around it physically, and fly the ship with the controllers:
 
 - Left stick: thrust and strafe. Right stick: look.
 - Left / right trigger: down / up. Left / right grip: kata / ana.
-- A: boost. B: view. X: flight assist. Y: cycle view axes.
+- A: boost. B: cube / slice view. X: flight assist. Y: cycle view axes.
 - Left stick click: 4D mode (the right stick then turns toward ana).
   Right stick click: next target.
+
+In the slice view you are the ship, inside the 3D cross-section: the
+headset looks around the slice, and head motion moves the camera 1:1.
 
 It needs WebXR with the WebGPU binding. On Meta Quest that means Quest
 Browser 146+ with "WebXR experimental features" enabled in `chrome://flags`.

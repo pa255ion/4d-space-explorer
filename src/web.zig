@@ -307,6 +307,7 @@ export fn vrEnter(floor_y: f32) void {
     vr_saved_view = g.s.view;
     // Headsets have phone-class GPUs and need two views at 72+ Hz.
     g.s.low_quality = true;
+    g.s.view = .retina; // B toggles the slice view
     auto_retina.level = 1; // 48^3
     vr_scale_level = 2;
     vr_avg_dt = 0;
@@ -325,7 +326,6 @@ export fn vrExit() void {
 /// view port of `vp_w` x `vp_h` (the recommended per-eye size).
 export fn vrFrame(raw_dt: f64, n_views: u32, vp_w: u32, vp_h: u32) void {
     const dt = std.math.clamp(raw_dt, 0, 0.1);
-    g.s.view = .retina; // the slice view has no place in the room
     var an = Analog{};
     if (pad_connected) {
         const o = g.pad.update(&g, pad_state[0..pad.n_axes].*, pad_state[pad.n_axes..].*, @floatCast(dt));
@@ -359,10 +359,38 @@ export fn vrFrame(raw_dt: f64, n_views: u32, vp_w: u32, vp_h: u32) void {
         }
         g.eye = e;
         vr_params[i] = game.buildParams(&g, vr_eye_w, vr_eye_h);
+        if (g.s.view == .slice) {
+            const head = [3]f32{ v[0], v[1] - vr_floor_offset - observer.eye_height, v[2] };
+            sliceEye(&vr_params[i], g.viewAxes(), e, head);
+        }
     }
     g.eye = null;
     g.n_eff = settings_mod.retina_sizes[auto_retina.level];
     for (&vr_params) |*p| p.n = g.n_eff.?;
+}
+
+/// Slice view in VR: you are the ship, inside the 3D cross-section. XR
+/// space maps onto the slice (x -> right, y -> up, -z -> forward), so the
+/// headset turns the view and head motion moves the camera 1:1 in metres.
+/// The slice kernel's ray is fwd + (right*u + up*v)*tan_half_fov with
+/// u in [-aspect, aspect], the same convention as the eye's rays.
+fn sliceEye(p: *world.Params, axes: [4]game.V4, e: game.Eye, head: [3]f32) void {
+    const map = struct {
+        fn f(ax: [4]game.V4, d: [3]f32) game.V4 {
+            return ax[0] * @as(game.V4, @splat(d[0])) + ax[1] * @as(game.V4, @splat(d[1])) - ax[2] * @as(game.V4, @splat(d[2]));
+        }
+    }.f;
+    const t = @sqrt(e.up[0] * e.up[0] + e.up[1] * e.up[1] + e.up[2] * e.up[2]);
+    const k = 1 / t;
+    p.fwd = game.toF32x4(map(axes, e.fwd));
+    p.right = game.toF32x4(map(axes, .{ e.right[0] * k, e.right[1] * k, e.right[2] * k }));
+    p.up = game.toF32x4(map(axes, .{ e.up[0] * k, e.up[1] * k, e.up[2] * k }));
+    p.tan_half_fov = t;
+    // Bodies are given relative to the camera: shift them by the head offset.
+    const off = game.toF32x4(map(axes, head));
+    for (&p.bodies) |*b| for (0..4) |c| {
+        b.c[c] -= off[c];
+    };
 }
 
 /// Lower the per-eye resolution first, then the retina, when the headset
@@ -376,11 +404,12 @@ fn vrQuality(raw_dt: f64) void {
     if (vr_timer < 1.0) return;
     vr_timer = 0;
     const n64 = comptime std.mem.indexOfScalar(i32, &settings_mod.retina_sizes, 64).?;
+    const slice = g.s.view == .slice; // only the resolution matters there
     if (vr_avg_dt > 1.0 / 55.0) {
         vr_hold = 10;
-        if (vr_scale_level > 0) vr_scale_level -= 1 else if (auto_retina.level > 0) auto_retina.level -= 1;
+        if (vr_scale_level > 0) vr_scale_level -= 1 else if (!slice and auto_retina.level > 0) auto_retina.level -= 1;
     } else if (vr_avg_dt < 1.0 / 66.0 and vr_hold <= 0) {
-        if (auto_retina.level < n64) auto_retina.level += 1 else if (vr_scale_level + 1 < vr_scales.len) vr_scale_level += 1;
+        if (!slice and auto_retina.level < n64) auto_retina.level += 1 else if (vr_scale_level + 1 < vr_scales.len) vr_scale_level += 1;
     }
 }
 
